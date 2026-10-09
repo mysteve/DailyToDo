@@ -1,0 +1,21 @@
+{
+  "tool": "built-in imagegen",
+  "finalAsset": "riji-girl-icon.png",
+  "prompts": [
+    {
+      "purpose": "initial-character",
+      "transparent_background": true,
+      "prompt": "Use case: logo-brand.\nAsset type: production desktop application icon for a Chinese local work journal app, one square icon.\nPrimary request: Create ONE original cute chibi female mascot icon with an oversized head and a small upper body. The character is friendly and calm, with a gentle smile, expressive clear blue eyes, dark midnight-brown bobbed hair with soft bangs, and one simple cobalt-blue hair clip. She wears a neatly drawn blue-and-white cardigan with a clean collar. Original anime-inspired chibi illustration, polished flat shapes with subtle cel shading, a clear dark outline and beautifully readable features.\nComposition: a 1024 by 1024 SQUARE canvas. Front-facing centered head-and-shoulders portrait, head fills about 75% of icon width. Hair, face and shoulders contained entirely within the icon. Place the character in front of one pale cool-blue rounded-square tile with a 16% corner radius. Very tight, balanced app-icon composition, no full body or extra objects. Keep face and eyes large and immediately recognizable when scaled down to 32px.\nPalette: cobalt blue #4263EB, pale blue #EAF0FF, ivory-white, dark navy-brown hair, warm peach skin with a very restrained pink blush. Fits an elegant cool gray and blue productivity desktop app.\nBackground: genuinely TRANSPARENT outside the rounded-square icon silhouette. The rounded-square tile itself is filled pale blue. Crisp anti-aliased outer edges, no cast shadow, no outer frame.\nConstraints: exactly one original female character, exactly one complete icon, no text, no letters, no app name, no watermark, no logos, no signature, no UI mockup, no icon sheet, no display device, no reference to an existing anime character. Avoid intricate small patterns, ribbons, many hair accessories, jewelry, tiny stationery, photorealism, excessive gloss, and busy background decoration. The result must be immediately usable as the project's application icon."
+    },
+    {
+      "purpose": "transparent-edge-iteration",
+      "transparent_background": true,
+      "prompt": "Edit this existing app icon. Preserve the original girl, face, hairstyle, blue hair clip, clothing, illustration style, pale blue rounded-square tile, composition, colors, proportions, and square canvas exactly. Only clean the exterior edge: remove all stray white specks, white flecks, irregular white fringe, disconnected pixels and stray marks outside the pale blue rounded square. The entire area outside the rounded-square silhouette must be perfectly transparent, with a smooth crisp antialiased edge and no white halo, no outer glow, no shadow. Keep the complete girl and the complete tile unchanged. Deliver one clean square production app icon with no text and no added objects."
+    },
+    {
+      "purpose": "final-opaque-app-icon",
+      "transparent_background": false,
+      "prompt": "Use this provided original chibi girl illustration as the exact character reference. Preserve her face, hairstyle, blue hair clip, clothing, illustration style and colors. Make it a clean production desktop app icon. Output exactly ONE SQUARE image. Replace the entire background with a completely opaque pale cool-blue #EAF0FF full-bleed background reaching every canvas edge. No transparency anywhere. No rounded-square container, no outside area, no border and no white fringes or disconnected flecks. The background must be one clean continuous pale blue color, including every corner. Keep the character centered, head large, full head and shoulders visible, with the hair about 86% of canvas width and the bottom of the cardigan touching the bottom canvas edge. Front-facing friendly chibi girl, dark bobbed hair, expressive blue eyes, gentle smile. Sharp polished anime-inspired flat illustration. No text, no added objects, no watermark, no icon sheet, no outer shadow."
+    }
+  ]
+}

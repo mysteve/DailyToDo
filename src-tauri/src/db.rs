@@ -1,0 +1,455 @@
+use crate::{images, models::*, reports::validate_date};
+use rusqlite::{params, Connection, OptionalExtension};
+use std::path::Path;
+
+pub fn open(path: &Path) -> Result<Connection, String> {
+    let connection = Connection::open(path).map_err(|e| format!("无法打开本地数据库：{e}"))?;
+    connection
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| e.to_string())?;
+    connection.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;
+        CREATE TABLE IF NOT EXISTS notes (id TEXT PRIMARY KEY, date TEXT NOT NULL, payload TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS notes_date ON notes(date);
+        CREATE TABLE IF NOT EXISTS goals (id TEXT PRIMARY KEY, date TEXT NOT NULL, payload TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS goals_date ON goals(date);
+        CREATE TABLE IF NOT EXISTS reports (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, payload TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS images (id TEXT PRIMARY KEY, payload TEXT NOT NULL, data BLOB NOT NULL);
+        PRAGMA user_version = 2;") .map_err(|e| e.to_string())?;
+    Ok(connection)
+}
+
+fn read_list<T: serde::de::DeserializeOwned>(
+    connection: &Connection,
+    sql: &str,
+) -> Result<Vec<T>, String> {
+    let mut statement = connection.prepare(sql).map_err(|e| e.to_string())?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    rows.map(|row| {
+        let value = row.map_err(|e| e.to_string())?;
+        serde_json::from_str(&value).map_err(|e| format!("本地数据格式异常：{e}"))
+    })
+    .collect()
+}
+
+pub fn load(connection: &Connection, storage_path: String) -> Result<Workspace, String> {
+    let notes = read_list(connection, "SELECT payload FROM notes ORDER BY date, id")?;
+    let goals = read_list(connection, "SELECT payload FROM goals ORDER BY date, id")?;
+    let reports = read_list(
+        connection,
+        "SELECT payload FROM reports ORDER BY created_at DESC",
+    )?;
+    Ok(Workspace {
+        notes,
+        goals,
+        reports,
+        settings: settings(connection)?,
+        storage_path,
+    })
+}
+
+pub fn settings(connection: &Connection) -> Result<AiSettings, String> {
+    let raw: Option<String> = connection
+        .query_row("SELECT payload FROM settings WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .optional()
+        .map_err(|e| e.to_string())?;
+    raw.map(|value| serde_json::from_str(&value).map_err(|e| e.to_string()))
+        .unwrap_or_else(|| Ok(AiSettings::default()))
+}
+
+pub fn validate_id(id: &str) -> Result<(), String> {
+    uuid::Uuid::parse_str(id)
+        .map(|_| ())
+        .map_err(|_| "记录标识不正确".into())
+}
+
+pub fn validate_note(note: &Note) -> Result<(), String> {
+    validate_id(&note.id)?;
+    validate_date(&note.date)?;
+    if note.content.trim().is_empty() && note.images.is_empty() {
+        return Err("请填写记录内容或添加图片".into());
+    }
+    if note.content.chars().count() > 32000 {
+        return Err("记录内容不能超过 32000 字".into());
+    }
+    if note.images.len() > 9 {
+        return Err("每条记录最多添加 9 张图片".into());
+    }
+    let mut ids = std::collections::HashSet::new();
+    for image in &note.images {
+        images::validate_metadata(image)?;
+        if !ids.insert(&image.id) {
+            return Err("记录中的图片重复".into());
+        }
+    }
+    if note.tag.chars().count() > 40 {
+        return Err("标签不能超过 40 字".into());
+    }
+    validate_times(&note.created_at, &note.updated_at)
+}
+
+pub fn validate_goal(goal: &Goal) -> Result<(), String> {
+    validate_id(&goal.id)?;
+    validate_date(&goal.date)?;
+    if goal.title.trim().is_empty() || goal.title.chars().count() > 300 {
+        return Err("待办需为 1 至 300 字".into());
+    }
+    validate_times(&goal.created_at, &goal.updated_at)
+}
+
+fn validate_times(created: &str, updated: &str) -> Result<(), String> {
+    chrono::DateTime::parse_from_rfc3339(created).map_err(|_| "创建时间不正确")?;
+    chrono::DateTime::parse_from_rfc3339(updated).map_err(|_| "更新时间不正确")?;
+    Ok(())
+}
+
+#[cfg(test)]
+pub fn save_note(connection: &Connection, note: &Note) -> Result<(), String> {
+    save_note_with_images(connection, note, &[])
+}
+
+pub fn save_note_with_images(
+    connection: &Connection,
+    note: &Note,
+    uploads: &[ImageUpload],
+) -> Result<(), String> {
+    validate_note(note)?;
+    if uploads.len() > note.images.len() {
+        return Err("上传的图片数量不正确".into());
+    }
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|e| e.to_string())?;
+    let mut ids = std::collections::HashSet::new();
+    for upload in uploads {
+        if !ids.insert(&upload.id) {
+            return Err("上传的图片重复".into());
+        }
+        let image = note
+            .images
+            .iter()
+            .find(|image| image.id == upload.id)
+            .ok_or("上传图片未关联记录")?;
+        images::store(&transaction, image, &upload.data)?;
+    }
+    images::check_references(&transaction, &note.images)?;
+    let payload = serde_json::to_string(note).map_err(|e| e.to_string())?;
+    transaction.execute("INSERT INTO notes(id, date, payload) VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET date = excluded.date, payload = excluded.payload", params![note.id, note.date, payload]).map_err(|e| e.to_string())?;
+    images::prune(&transaction)?;
+    transaction.commit().map_err(|e| e.to_string())
+}
+
+pub fn save_goal(connection: &Connection, goal: &Goal) -> Result<(), String> {
+    validate_goal(goal)?;
+    let payload = serde_json::to_string(goal).map_err(|e| e.to_string())?;
+    connection.execute("INSERT INTO goals(id, date, payload) VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET date = excluded.date, payload = excluded.payload", params![goal.id, goal.date, payload]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn save_report(connection: &Connection, report: &Report) -> Result<(), String> {
+    for note in &report.sources.notes {
+        images::check_references(connection, &note.images)?;
+    }
+    let payload = serde_json::to_string(report).map_err(|e| e.to_string())?;
+    connection
+        .execute(
+            "INSERT INTO reports(id, created_at, payload) VALUES (?1, ?2, ?3)",
+            params![report.id, report.created_at, payload],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn delete(connection: &Connection, entity: &str, id: &str) -> Result<(), String> {
+    validate_id(id)?;
+    let sql = match entity {
+        "notes" => "DELETE FROM notes WHERE id = ?1",
+        "goals" => "DELETE FROM goals WHERE id = ?1",
+        "reports" => "DELETE FROM reports WHERE id = ?1",
+        _ => return Err("记录类型不正确".into()),
+    };
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|e| e.to_string())?;
+    transaction
+        .execute(sql, params![id])
+        .map_err(|e| e.to_string())?;
+    images::prune(&transaction)?;
+    transaction.commit().map_err(|e| e.to_string())
+}
+
+pub fn save_settings(connection: &Connection, settings: &AiSettings) -> Result<(), String> {
+    let mut config = settings.clone();
+    config.has_api_key = false;
+    let payload = serde_json::to_string(&config).map_err(|e| e.to_string())?;
+    connection.execute("INSERT INTO settings(id, payload) VALUES (1, ?1) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload", params![payload]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn import(connection: &mut Connection, backup: &Backup) -> Result<(), String> {
+    if !matches!(backup.version, 1 | 2) {
+        return Err("不支持的备份版本".into());
+    }
+    if backup.notes.len() + backup.goals.len() + backup.reports.len() > 100000 {
+        return Err("备份记录过多".into());
+    }
+    for note in &backup.notes {
+        validate_note(note)?;
+    }
+    for goal in &backup.goals {
+        validate_goal(goal)?;
+    }
+    for report in &backup.reports {
+        validate_id(&report.id)?;
+        validate_date(&report.start_date)?;
+        validate_date(&report.end_date)?;
+        if report.start_date > report.end_date
+            || report.markdown.chars().count() > 500000
+            || report.title.trim().is_empty()
+        {
+            return Err("报告内容不正确".into());
+        }
+        chrono::DateTime::parse_from_rfc3339(&report.created_at)
+            .map_err(|_| "报告创建时间不正确")?;
+        for note in &report.sources.notes {
+            validate_note(note)?;
+        }
+        for goal in &report.sources.goals {
+            validate_goal(goal)?;
+        }
+    }
+    let transaction = connection.transaction().map_err(|e| e.to_string())?;
+    let mut ids = std::collections::HashSet::new();
+    for asset in &backup.images {
+        if !ids.insert(&asset.image.id) {
+            return Err("备份包含重复图片".into());
+        }
+        images::store(&transaction, &asset.image, &asset.data)?;
+    }
+    for note in &backup.notes {
+        images::check_references(&transaction, &note.images)?;
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO notes(id, date, payload) VALUES (?1, ?2, ?3)",
+                params![
+                    note.id,
+                    note.date,
+                    serde_json::to_string(note).map_err(|e| e.to_string())?
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+    }
+    for goal in &backup.goals {
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO goals(id, date, payload) VALUES (?1, ?2, ?3)",
+                params![
+                    goal.id,
+                    goal.date,
+                    serde_json::to_string(goal).map_err(|e| e.to_string())?
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+    }
+    for report in &backup.reports {
+        for note in &report.sources.notes {
+            images::check_references(&transaction, &note.images)?;
+        }
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO reports(id, created_at, payload) VALUES (?1, ?2, ?3)",
+                params![
+                    report.id,
+                    report.created_at,
+                    serde_json::to_string(report).map_err(|e| e.to_string())?
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+    }
+    images::prune(&transaction)?;
+    transaction.commit().map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn note() -> Note {
+        Note {
+            id: uuid::Uuid::new_v4().to_string(),
+            date: "2026-10-09".into(),
+            content: "真实工作记录".into(),
+            kind: NoteKind::Note,
+            tag: String::new(),
+            created_at: "2026-10-09T09:00:00+08:00".into(),
+            updated_at: "2026-10-09T09:00:00+08:00".into(),
+            images: vec![],
+        }
+    }
+    #[test]
+    fn edit_persists_without_duplicate_and_backup_preserves_existing() {
+        let mut connection = open(Path::new(":memory:")).unwrap();
+        let mut original = note();
+        save_note(&connection, &original).unwrap();
+        original.content = "已修改".into();
+        save_note(&connection, &original).unwrap();
+        let mut incoming = original.clone();
+        incoming.content = "旧内容".into();
+        import(
+            &mut connection,
+            &Backup {
+                version: 1,
+                notes: vec![incoming],
+                goals: vec![],
+                reports: vec![],
+                images: vec![],
+            },
+        )
+        .unwrap();
+        let workspace = load(&connection, String::new()).unwrap();
+        assert_eq!(workspace.notes.len(), 1);
+        assert_eq!(workspace.notes[0].content, "已修改");
+    }
+    #[test]
+    fn invalid_backup_does_not_partially_import() {
+        let mut connection = open(Path::new(":memory:")).unwrap();
+        let mut invalid = note();
+        invalid.date = "2026-02-30".into();
+        assert!(import(
+            &mut connection,
+            &Backup {
+                version: 1,
+                notes: vec![note(), invalid],
+                goals: vec![],
+                reports: vec![],
+                images: vec![],
+            }
+        )
+        .is_err());
+        assert!(load(&connection, String::new()).unwrap().notes.is_empty());
+    }
+
+    fn image() -> BackupImage {
+        BackupImage {
+            image: NoteImage { id: uuid::Uuid::new_v4().to_string(), name: "截图.png".into(), mime: "image/png".into(), width: 1, height: 1 },
+            data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2V5sAAAAASUVORK5CYII=".into(),
+        }
+    }
+
+    #[test]
+    fn image_only_note_persists_and_snapshot_retains_image_until_report_is_deleted() {
+        let connection = open(Path::new(":memory:")).unwrap();
+        let mut note = note();
+        let asset = image();
+        note.content.clear();
+        note.images.push(asset.image.clone());
+        save_note_with_images(
+            &connection,
+            &note,
+            &[ImageUpload {
+                id: asset.image.id.clone(),
+                data: asset.data.clone(),
+            }],
+        )
+        .unwrap();
+        let workspace = load(&connection, String::new()).unwrap();
+        assert_eq!(workspace.notes[0].images, note.images);
+        let request = ReportRequest {
+            r#type: ReportType::Daily,
+            anchor_date: note.date.clone(),
+            start_date: None,
+            end_date: None,
+            style: ReportStyle::Brief,
+            mode: GenerationMode::Local,
+            include_notes: true,
+            include_goals: false,
+            instruction: String::new(),
+        };
+        let report = crate::reports::make_report(&request, workspace.notes, vec![]).unwrap();
+        assert!(report.markdown.contains("附图 1 张"));
+        save_report(&connection, &report).unwrap();
+        let before = images::read(&connection, &asset.image.id).unwrap();
+        note.content = "保留文字，移除图片".into();
+        note.images.clear();
+        save_note(&connection, &note).unwrap();
+        delete(&connection, "notes", &note.id).unwrap();
+        assert_eq!(images::read(&connection, &asset.image.id).unwrap(), before);
+        let backup_images =
+            images::export(&connection, &load(&connection, String::new()).unwrap()).unwrap();
+        assert_eq!(backup_images.len(), 1);
+        delete(&connection, "reports", &report.id).unwrap();
+        assert!(images::read(&connection, &asset.image.id).is_err());
+    }
+
+    #[test]
+    fn image_backup_roundtrip_and_missing_reference_rollback() {
+        let mut original = open(Path::new(":memory:")).unwrap();
+        let asset = image();
+        let mut note = note();
+        note.images.push(asset.image.clone());
+        let backup = Backup {
+            version: 2,
+            notes: vec![note.clone()],
+            goals: vec![],
+            reports: vec![],
+            images: vec![asset],
+        };
+        import(&mut original, &backup).unwrap();
+        let workspace = load(&original, String::new()).unwrap();
+        let encoded = serde_json::to_string(&Backup {
+            version: 2,
+            images: images::export(&original, &workspace).unwrap(),
+            notes: workspace.notes,
+            goals: workspace.goals,
+            reports: workspace.reports,
+        })
+        .unwrap();
+        let mut restored = open(Path::new(":memory:")).unwrap();
+        import(&mut restored, &serde_json::from_str(&encoded).unwrap()).unwrap();
+        assert_eq!(
+            images::read(&original, &note.images[0].id).unwrap(),
+            images::read(&restored, &note.images[0].id).unwrap()
+        );
+        let mut empty = open(Path::new(":memory:")).unwrap();
+        let missing = Backup {
+            version: 2,
+            notes: vec![note],
+            goals: vec![],
+            reports: vec![],
+            images: vec![],
+        };
+        assert!(import(&mut empty, &missing).is_err());
+        assert!(load(&empty, String::new()).unwrap().notes.is_empty());
+    }
+
+    #[test]
+    fn invalid_upload_rolls_back_and_legacy_note_still_loads() {
+        let connection = open(Path::new(":memory:")).unwrap();
+        let asset = image();
+        let mut note = note();
+        let legacy = serde_json::to_value(&note).unwrap();
+        assert!(legacy.get("images").is_none());
+        assert!(serde_json::from_value::<Note>(legacy)
+            .unwrap()
+            .images
+            .is_empty());
+        note.images.push(asset.image.clone());
+        assert!(save_note_with_images(
+            &connection,
+            &note,
+            &[ImageUpload {
+                id: asset.image.id.clone(),
+                data: "invalid".into()
+            }]
+        )
+        .is_err());
+        assert!(load(&connection, String::new()).unwrap().notes.is_empty());
+        assert!(images::read(&connection, &asset.image.id).is_err());
+        assert!(save_note(&connection, &note).is_err());
+        note.images = vec![asset.image; 10];
+        assert!(validate_note(&note).is_err());
+    }
+}

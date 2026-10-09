@@ -1,0 +1,13 @@
+{
+  "tool": "built-in imagegen",
+  "status": "applied",
+  "applied_assets": ["public/app-icon.png", "src-tauri/icons"],
+  "selected_variant": "B",
+  "name": "眨眼",
+  "source": "closure-variants/b-wink.png",
+  "selected_asset": "riji-closure-icon.png",
+  "reference_page": "https://prts.wiki/w/%E5%8F%AF%E9%9C%B2%E5%B8%8C%E5%B0%94",
+  "background": "#EAF0FF",
+  "transparent_background": false,
+  "prompt": "Create one square desktop application icon portrait, a brand-new super-deformed chibi interpretation of Closure (可露希尔) from Arknights, using the attached official character illustrations as identity references. Preserve the recognizable character: very dark blue-black long hair with the reference fringe and long face-framing locks, small tied-back side sections, vivid ruby red eyes, pale warm skin, pointed elf-like ears, slim black choker, oversized near-black jacket with deep crimson red lining over a plain white top. Her expression is clever, friendly and slightly mischievous. Keep the original character identity and outfit colors while simplifying the illustration for a tiny app icon. A large round chibi head and compact shoulders, head occupying about 74% of the square width, centered balanced composition, complete hair silhouette and ears within 7% safety padding. Shoulders end near the lower edge; no full body. Use a full-bleed opaque, clean light cold gray-blue background (#EAF0FF), modest soft cool-blue halo behind her head, crisp outer silhouette and readable red eyes. High quality finished artwork, visual clarity at 32px and 64px. No text, letters, labels, numbers, logos, watermark, badges, interface, borders, devices, tools, extra characters, decorative floating symbols, horns, animal ears, glasses, blue eyes or blue cardigan. Do not reproduce the original full-body composition. Variant B: expressive playful 2D anime chibi illustration with slightly thicker clean outlines and rounded forms. Slight head tilt, one ruby eye open and the other eye winking, cheeky open-mouth grin with a single very small upper fang, soft blush. Both hands outside the frame. Hair and ears match the reference; lively but completely uncluttered."
+}

@@ -1,0 +1,51 @@
+{
+  "tool": "built-in imagegen",
+  "status": "applied",
+  "selected_variant": "B",
+  "selected_asset": "../riji-closure-icon.png",
+  "generated_outputs": {
+    "A": { "file": "a-smile.png", "original": "exec-bc5995ef-ed3d-4cf6-a62f-49705fd79ffd.png" },
+    "B": { "file": "b-wink.png", "original": "exec-abf7a483-fa44-4c94-8b0a-f5b83ec7d052.png" },
+    "C": { "file": "c-cheerful.png", "original": "exec-9df6c2ef-f025-4933-adde-db248bf21cc3.png" },
+    "D": { "file": "d-minimal.png", "original": "exec-5afa2e02-3b82-406d-99d3-c075bbff0559.png" }
+  },
+  "reference_images": [
+    {
+      "path": "reference-npc.png",
+      "url": "https://media.prts.wiki/5/52/Avg_avg_npc_050.png"
+    },
+    {
+      "path": "reference-classic.png",
+      "url": "https://static.zerochan.net/Closure.full.2624681.png"
+    }
+  ],
+  "reference_page": "https://prts.wiki/w/%E5%8F%AF%E9%9C%B2%E5%B8%8C%E5%B0%94",
+  "background": "#EAF0FF",
+  "transparent_background": false,
+  "variants": [
+    {
+      "id": "A",
+      "name": "微笑",
+      "file": "a-smile.png",
+      "prompt": "Create one square desktop application icon portrait, a brand-new super-deformed chibi interpretation of Closure (可露希尔) from Arknights, using the attached official character illustrations as identity references. Preserve the recognizable character: very dark blue-black long hair with the reference fringe and long face-framing locks, small tied-back side sections, vivid ruby red eyes, pale warm skin, pointed elf-like ears, slim black choker, oversized near-black jacket with deep crimson red lining over a plain white top. Her expression is clever, friendly and slightly mischievous. Keep the original character identity and outfit colors while simplifying the illustration for a tiny app icon. A large round chibi head and compact shoulders, head occupying about 74% of the square width, centered balanced composition, complete hair silhouette and ears within 7% safety padding. Shoulders end near the lower edge; no full body. Use a full-bleed opaque, clean light cold gray-blue background (#EAF0FF), modest soft cool-blue halo behind her head, crisp outer silhouette and readable red eyes. High quality finished artwork, visual clarity at 32px and 64px. No text, letters, labels, numbers, logos, watermark, badges, interface, borders, devices, tools, extra characters, decorative floating symbols, horns, animal ears, glasses, blue eyes or blue cardigan. Do not reproduce the original full-body composition. Variant A: polished Japanese anime chibi illustration, fine clean dark outlines, subtle cel shading, softly rounded glossy hair with restrained highlights. Face almost front-facing, both red eyes open, gentle confident closed-mouth smile, light blush. No hands or props. Cute yet calm, carefully detailed while uncluttered."
+    },
+    {
+      "id": "B",
+      "name": "眨眼",
+      "file": "b-wink.png",
+      "prompt": "Create one square desktop application icon portrait, a brand-new super-deformed chibi interpretation of Closure (可露希尔) from Arknights, using the attached official character illustrations as identity references. Preserve the recognizable character: very dark blue-black long hair with the reference fringe and long face-framing locks, small tied-back side sections, vivid ruby red eyes, pale warm skin, pointed elf-like ears, slim black choker, oversized near-black jacket with deep crimson red lining over a plain white top. Her expression is clever, friendly and slightly mischievous. Keep the original character identity and outfit colors while simplifying the illustration for a tiny app icon. A large round chibi head and compact shoulders, head occupying about 74% of the square width, centered balanced composition, complete hair silhouette and ears within 7% safety padding. Shoulders end near the lower edge; no full body. Use a full-bleed opaque, clean light cold gray-blue background (#EAF0FF), modest soft cool-blue halo behind her head, crisp outer silhouette and readable red eyes. High quality finished artwork, visual clarity at 32px and 64px. No text, letters, labels, numbers, logos, watermark, badges, interface, borders, devices, tools, extra characters, decorative floating symbols, horns, animal ears, glasses, blue eyes or blue cardigan. Do not reproduce the original full-body composition. Variant B: expressive playful 2D anime chibi illustration with slightly thicker clean outlines and rounded forms. Slight head tilt, one ruby eye open and the other eye winking, cheeky open-mouth grin with a single very small upper fang, soft blush. Both hands outside the frame. Hair and ears match the reference; lively but completely uncluttered."
+    },
+    {
+      "id": "C",
+      "name": "元气",
+      "file": "c-cheerful.png",
+      "prompt": "Create one square desktop application icon portrait, a brand-new super-deformed chibi interpretation of Closure (可露希尔) from Arknights, using the attached official character illustrations as identity references. Preserve the recognizable character: very dark blue-black long hair with the reference fringe and long face-framing locks, small tied-back side sections, vivid ruby red eyes, pale warm skin, pointed elf-like ears, slim black choker, oversized near-black jacket with deep crimson red lining over a plain white top. Her expression is clever, friendly and slightly mischievous. Keep the original character identity and outfit colors while simplifying the illustration for a tiny app icon. A large round chibi head and compact shoulders, head occupying about 74% of the square width, centered balanced composition, complete hair silhouette and ears within 7% safety padding. Shoulders end near the lower edge; no full body. Use a full-bleed opaque, clean light cold gray-blue background (#EAF0FF), modest soft cool-blue halo behind her head, crisp outer silhouette and readable red eyes. High quality finished artwork, visual clarity at 32px and 64px. No text, letters, labels, numbers, logos, watermark, badges, interface, borders, devices, tools, extra characters, decorative floating symbols, horns, animal ears, glasses, blue eyes or blue cardigan. Do not reproduce the original full-body composition. Variant C: premium soft matte 3D chibi figurine rendering, sculpted stylized dark hair in simple large smooth locks, minimal soft surface texture, diffuse studio lighting, no heavy cast shadow. Front-facing, both large ruby eyes open, bright cheerful small open-mouth smile, rosy cheeks. No hands or props. Keep black jacket and deep red lining distinct; retain pointed ears and long hair, very cute compact proportions."
+    },
+    {
+      "id": "D",
+      "name": "极简",
+      "file": "d-minimal.png",
+      "prompt": "Create one square desktop application icon portrait, a brand-new super-deformed chibi interpretation of Closure (可露希尔) from Arknights, using the attached official character illustrations as identity references. Preserve the recognizable character: very dark blue-black long hair with the reference fringe and long face-framing locks, small tied-back side sections, vivid ruby red eyes, pale warm skin, pointed elf-like ears, slim black choker, oversized near-black jacket with deep crimson red lining over a plain white top. Her expression is clever, friendly and slightly mischievous. Keep the original character identity and outfit colors while simplifying the illustration for a tiny app icon. A large round chibi head and compact shoulders, head occupying about 74% of the square width, centered balanced composition, complete hair silhouette and ears within 7% safety padding. Shoulders end near the lower edge; no full body. Use a full-bleed opaque, clean light cold gray-blue background (#EAF0FF), modest soft cool-blue halo behind her head, crisp outer silhouette and readable red eyes. High quality finished artwork, visual clarity at 32px and 64px. No text, letters, labels, numbers, logos, watermark, badges, interface, borders, devices, tools, extra characters, decorative floating symbols, horns, animal ears, glasses, blue eyes or blue cardigan. Do not reproduce the original full-body composition. Variant D: minimal flat 2D kawaii app icon illustration, strong smooth dark outline, only a few large flat color areas, almost no shading, no gradients on the character. Large simple ruby red eyes with one tiny highlight each, small curved smile, two tiny blush marks. Simplified dark hair and pointed ears faithful to the reference, simplified black choker, white shirt and black jacket with red lining. No hands or props. Maximum clean readability at small icon sizes."
+    }
+  ]
+}
