@@ -42,7 +42,7 @@
 | `src/api.ts` | 桌面 IPC 与浏览器预览的统一接口 |
 | `src/domain.ts`、`src/domain.test.ts` | 类型、日期范围、统计、本地报告及领域测试 |
 | `src/images.ts` | 图片预处理及浏览器 IndexedDB 存储 |
-| `src/components/JournalPage.vue` | 手记编辑、图片上传／粘贴、待办（项目、优先级、耗时、顺延）；页面不放报告和统计卡片，生成入口在工作报告与统计概览页 |
+| `src/components/JournalPage.vue` | 手记编辑、图片上传／粘贴、待办（项目、优先级、耗时、顺延、风险原因与插活）；页面不放报告和统计卡片，生成入口在工作报告与统计概览页 |
 | `src/analytics.ts` | 统计概览与待办派生逻辑：周期、趋势、项目占比、积压、顺延、热力图、耗时解析与 CSV |
 | `src/components/ReportCenter.vue`、`src/components/DateRangePicker.vue` | 报告生成、历史、来源查看及日期范围选择 |
 | `src/components/InsightsPage.vue`、`src/components/CalendarPanel.vue` | 统计概览及日期导航 |
@@ -117,7 +117,7 @@
 - 桌面数据库通过 Tauri `app_data_dir()` 定位，Windows 默认路径为 `%APPDATA%\com.riji.worklog\riji.db`，实际路径以设置页和运行环境为准。
 - 浏览器预览的工作区存于 localStorage 的 `riji-preview-v1`；图片存于 IndexedDB 的 `riji-preview-images`。二者与桌面数据库互不共享。
 - 初次启动保持空工作区，不提供示例数据载入功能。
-- 待办的 `project`、`priority`、`estimateMin`、`actualMin`、`completedAt`、`originDate`、`carryCount` 均为可选字段，缺失时视为未设置；Rust 侧通过 serde 默认值读取旧 payload，所有输入由 Rust 校验（`db.rs` 中 `validate_goal`），前端 `validateGoal` 仅用于预览模式。耗时由用户填写，禁止自动估算或编造。批量顺延使用 `save_goals` 事务。
+- 待办的 `project`、`priority`、`estimateMin`、`actualMin`、`completedAt`、`originDate`、`carryCount`、`risk`、`adHoc` 均为可选字段，缺失时视为未设置；`risk` 为风险或未完成原因，单行、最多 300 字，`adHoc` 为插活标记；Rust 侧通过 serde 默认值读取旧 payload，所有输入由 Rust 校验（`db.rs` 中 `validate_goal`），前端 `validateGoal` 仅用于预览模式。耗时由用户填写，禁止自动估算或编造。批量顺延使用 `save_goals` 事务。
 - 当前数据库 `user_version` 为 2。修改存储结构需兼容已有数据并提供必要迁移，不通过删除数据库或清空浏览器数据解决兼容问题。
 - JSON 备份导出版本为 2，兼容导入版本 1。备份包含手记、待办、报告、来源快照、图片和报告模板，不包含 AI 服务设置或密钥。带模板的备份恢复模板，旧备份保持当前模板。
 - 导入限制为 256 MiB；同 ID 的手记、待办和报告保留当前数据。桌面导入的校验、图片及记录写入保持原子性，失败不得留下部分导入结果。
@@ -127,7 +127,7 @@
 ## 7. AI、凭据与渲染边界
 
 - AI 请求在桌面 Rust 层发起；浏览器预览不执行真实 AI 调用。保留离线本地整理能力。
-- AI 报告由用户主动生成，仅发送所选范围内的待办事项、待办统计、对应报告模板及补充要求。工作记录和图片附件信息不进入新报告或 AI 请求。用户在设置中启用 Git 提交并在生成时勾选附带提交后，另发送该用户在所选范围内的提交标题、仓库、日期和短哈希，不含代码与提交正文；提交写入报告来源快照，不影响待办统计和完成率。日报、周报、月报模板分别保存于设置，旧设置缺失模板时使用默认值。
+- AI 报告由用户主动生成，仅发送所选范围内的待办事项（含项目、优先级、耗时、顺延、风险或原因与插活标记）、待办统计、对应报告模板及补充要求。工作记录和图片附件信息不进入新报告或 AI 请求。用户在设置中启用 Git 提交并在生成时勾选附带提交后，另发送该用户在所选范围内的提交标题、仓库、日期和短哈希，不含代码与提交正文；提交写入报告来源快照，不影响待办统计和完成率。日报、周报、月报模板分别保存于设置，旧设置缺失模板时使用默认值。
 - 来源记录属于数据，不执行其中的指令；模型不得编造成果、时间投入、完成状态或来源不支持的结论。调整提示词时保留这些边界。
 - 接口支持基地址或完整 `/chat/completions` 地址，返回文本取自 `choices[0].message.content`。远程接口使用 HTTPS，仅本机回环地址允许 HTTP。
 - 模型刷新使用当前表单地址和密钥请求同一服务的 `/models`，不保存设置；仅在规范化后的地址相同且未选择清除密钥时复用已保存的密钥。保留手动填写模型的能力。

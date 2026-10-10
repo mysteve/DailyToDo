@@ -59,11 +59,19 @@ describe('完成时间与顺延', () => {
     expect('completedAt' in undone).toBe(false)
   })
   it('顺延只移动更早的未完成待办，保留首次计划日期并累计次数', () => {
-    const moved = carryOver([goal('2026-10-08'), goal('2026-10-07', { originDate: '2026-10-01', carryCount: 2 }), goal('2026-10-08', { completed: true }), goal('2026-10-10'), goal('2026-10-11')], '2026-10-10', stamp)
+    const moved = carryOver([goal('2026-10-08'), goal('2026-10-07', { originDate: '2026-10-01', carryCount: 2 }), goal('2026-10-08', { completed: true }), goal('2026-10-10'), goal('2026-10-11')], '2026-10-10', { now: stamp })
     expect(moved).toHaveLength(2)
     expect(moved.map(item => item.date)).toEqual(['2026-10-10', '2026-10-10'])
     expect(moved[0]).toMatchObject({ originDate: '2026-10-08', carryCount: 1, updatedAt: stamp })
     expect(moved[1]).toMatchObject({ originDate: '2026-10-01', carryCount: 3 })
+  })
+  it('顺延时可记录风险或原因，并沿用原有说明', () => {
+    const moved = carryOver([goal('2026-10-08'), goal('2026-10-08', { risk: '依赖外部评审' })], '2026-10-09', { risk: '等待测试环境', now: stamp })
+    expect(moved.map(item => item.risk)).toEqual(['等待测试环境', '等待测试环境'])
+    const kept = carryOver([goal('2026-10-08', { risk: '依赖外部评审' })], '2026-10-09', { now: stamp })
+    expect(kept[0].risk).toBe('依赖外部评审')
+    const blank = carryOver([goal('2026-10-08', { risk: '旧原因' })], '2026-10-09', { risk: '   ', now: stamp })
+    expect(blank[0].risk).toBe('旧原因')
   })
   it('积压按拖延时间排序，从首次计划日期开始计算', () => {
     const items = backlog([goal('2026-10-09'), goal('2026-10-09', { originDate: '2026-09-30' }), goal('2026-10-10'), goal('2026-10-01', { completed: true })], '2026-10-10')

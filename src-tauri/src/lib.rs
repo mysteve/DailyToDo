@@ -349,6 +349,42 @@ async fn import_backup(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
     Ok(true)
 }
 
+// WebView2 的常规自动填充默认开启，会在自由文本输入框下弹出「保存的信息」面板。
+// Tauri 未暴露该设置，只能通过 WebView2 COM 接口关闭；失败不阻断启动。
+#[cfg(target_os = "windows")]
+fn disable_autofill(window: &tauri::WebviewWindow) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings4;
+    use windows_core::Interface;
+
+    let result = window.with_webview(|webview| {
+        let applied = (|| -> windows_core::Result<bool> {
+            let core = unsafe { webview.controller().CoreWebView2() }?;
+            let settings = unsafe { core.Settings() }?;
+            let settings = settings.cast::<ICoreWebView2Settings4>()?;
+            unsafe { settings.SetIsGeneralAutofillEnabled(false)? };
+            let mut enabled = windows_core::BOOL(1);
+            unsafe { settings.IsGeneralAutofillEnabled(&mut enabled)? };
+            Ok(enabled.as_bool())
+        })();
+        report_webview_message(match applied {
+            Ok(false) => "WebView2 常规自动填充已关闭".into(),
+            Ok(true) => "WebView2 常规自动填充仍处于开启状态".into(),
+            Err(error) => format!("关闭 WebView2 自动填充失败：{error}"),
+        });
+    });
+    if let Err(error) = result {
+        report_webview_message(format!("无法访问 WebView2 设置：{error}"));
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn report_webview_message(message: String) {
+    #[cfg(debug_assertions)]
+    println!("{message}");
+    #[cfg(not(debug_assertions))]
+    let _ = message;
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -364,6 +400,8 @@ pub fn run() {
                 generation: tokio::sync::Mutex::new(()),
             });
             if let Some(window) = app.get_webview_window("main") {
+                #[cfg(target_os = "windows")]
+                disable_autofill(&window);
                 if let Some(monitor) = window.current_monitor()?.or(window.primary_monitor()?) {
                     let area = monitor.work_area();
                     let size = PhysicalSize::new(1600, 900);

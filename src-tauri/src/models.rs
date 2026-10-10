@@ -79,10 +79,20 @@ pub struct Goal {
     pub origin_date: Option<String>,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub carry_count: u32,
+    /// 风险或未完成原因，仅在用户填写时进入报告。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub risk: String,
+    /// 插活：中途临时安排、不在原计划内的事项。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ad_hoc: bool,
 }
 
 fn is_zero(value: &u32) -> bool {
     *value == 0
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

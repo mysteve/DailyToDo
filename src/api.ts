@@ -47,6 +47,8 @@ export function validateGoal(goal: Goal) {
   if (goal.completedAt && (!goal.completed || Number.isNaN(Date.parse(goal.completedAt)))) throw new Error('完成时间不正确')
   if (goal.originDate !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(goal.originDate)) throw new Error('首次计划日期不正确')
   if (goal.priority !== undefined && !['high', 'normal', 'low'].includes(goal.priority)) throw new Error('优先级不正确')
+  if (goal.risk !== undefined && (goal.risk.length > 300 || goal.risk.includes('\n'))) throw new Error('风险／原因不能超过 300 字，且需在一行内')
+  if (goal.adHoc !== undefined && typeof goal.adHoc !== 'boolean') throw new Error('插活标记不正确')
 }
 
 function download(filename: string, content: string, mime: string) {

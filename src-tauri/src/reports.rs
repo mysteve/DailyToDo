@@ -90,6 +90,28 @@ pub fn format_minutes(minutes: u64) -> String {
     }
 }
 
+/// 已记录的风险或未完成原因，按填写顺序编号；没有填写时返回 None。
+fn recorded_reasons(goals: &[&Goal]) -> Option<String> {
+    let lines: Vec<String> = goals
+        .iter()
+        .filter(|goal| !goal.risk.trim().is_empty())
+        .enumerate()
+        .map(|(index, goal)| {
+            format!(
+                "{}{}：{}",
+                item_number(index),
+                goal.title.trim(),
+                goal.risk.trim()
+            )
+        })
+        .collect();
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines.join("\n"))
+    }
+}
+
 /// 已记录耗时的概述；没有任何耗时记录时返回 None，避免写出 0 分钟。
 fn time_summary(goals: &[Goal]) -> Option<String> {
     let recorded = goals
@@ -253,8 +275,9 @@ pub fn render_template(report: &Report, templates: &ReportTemplates) -> Result<S
                     .actual_min
                     .map(|minutes| format!("，耗时 {}", format_minutes(minutes as u64)))
                     .unwrap_or_default();
+                let adhoc = if goal.ad_hoc { "（插活）" } else { "" };
                 format!(
-                    "- [{}] {project}{}（{}{spent}）",
+                    "- [{}] {project}{}{adhoc}（{}{spent}）",
                     if goal.completed { "x" } else { " " },
                     goal.title,
                     goal.date
@@ -311,7 +334,20 @@ pub fn render_template(report: &Report, templates: &ReportTemplates) -> Result<S
         ),
         (
             "风险与协调事项",
-            "风险、进度影响及需协调事项：待确认".into(),
+            match recorded_reasons(&unfinished) {
+                Some(reasons) => format!(
+                    "风险、进度影响及需协调事项：\n{reasons}{}",
+                    if reasons.lines().count() < unfinished.len() {
+                        format!(
+                            "\n其余 {} 项未记录风险或问题：待确认",
+                            unfinished.len() - reasons.lines().count()
+                        )
+                    } else {
+                        String::new()
+                    }
+                ),
+                None => "风险、进度影响及需协调事项：待确认".into(),
+            },
         ),
         (
             "下阶段重点任务与交付",
@@ -322,10 +358,16 @@ pub fn render_template(report: &Report, templates: &ReportTemplates) -> Result<S
             if unfinished.is_empty() {
                 "所选范围内无未完成待办。".into()
             } else {
-                format!(
-                    "待推进事项：\n{}\n\n未完成原因：待确认",
-                    project_items(unfinished.clone(), None)
-                )
+                match recorded_reasons(&unfinished) {
+                    Some(reasons) => format!(
+                        "待推进事项：\n{}\n\n未完成原因：\n{reasons}",
+                        project_items(unfinished.clone(), None)
+                    ),
+                    None => format!(
+                        "待推进事项：\n{}\n\n未完成原因：待确认",
+                        project_items(unfinished.clone(), None)
+                    ),
+                }
             },
         ),
         (
@@ -736,5 +778,49 @@ mod tests {
         assert!(!report.markdown.contains("分钟") && !report.markdown.contains("小时"));
         assert_eq!(format_minutes(0), "0 分钟");
         assert_eq!(format_minutes(60), "1 小时");
+    }
+
+    #[test]
+    fn recorded_risks_fill_the_pending_sections_and_adhoc_items_are_marked() {
+        let mk = |title: &str, risk: &str| Goal {
+            id: uuid::Uuid::new_v4().to_string(),
+            date: "2026-10-09".into(),
+            title: title.into(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            risk: risk.into(),
+            ..Goal::default()
+        };
+        let mut request = request("2026-10-09", ReportType::Monthly);
+        request.style = ReportStyle::Detailed;
+        let report = make_report(
+            &request,
+            vec![],
+            vec![
+                mk("接口联调", "依赖外部联调环境，本日无法完成"),
+                mk("采购询价", ""),
+            ],
+        )
+        .unwrap();
+        assert!(report.markdown.contains(
+            "风险、进度影响及需协调事项：\n①接口联调：依赖外部联调环境，本日无法完成\n其余 1 项未记录风险或问题：待确认"
+        ));
+        assert!(report
+            .markdown
+            .contains("未完成原因：\n①接口联调：依赖外部联调环境，本日无法完成"));
+        assert!(!report
+            .markdown
+            .contains("风险、进度影响及需协调事项：待确认"));
+        let plain = make_report(&request, vec![], vec![mk("接口联调", "")]).unwrap();
+        assert!(plain
+            .markdown
+            .contains("风险、进度影响及需协调事项：待确认"));
+        assert!(plain.markdown.contains("未完成原因：待确认"));
+        let adhoc = vec![Goal {
+            ad_hoc: true,
+            ..mk("临时插入", "")
+        }];
+        let report = make_report(&request, vec![], adhoc).unwrap();
+        assert!(report.markdown.contains("临时插入（插活）"));
     }
 }

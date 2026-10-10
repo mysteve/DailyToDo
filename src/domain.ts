@@ -48,6 +48,10 @@ export interface Goal {
   /** 首次计划日期，顺延后保留原日期 */
   originDate?: string
   carryCount?: number
+  /** 风险或未完成原因，仅在填写时进入报告 */
+  risk?: string
+  /** 插活：中途临时安排、不在原计划内的事项 */
+  adHoc?: boolean
 }
 
 export const maxMinutes = 100000
@@ -304,16 +308,28 @@ function projectItems(goals: Goal[], detail?: { label: string; confirmation: str
   }).join('\n')
 }
 
+/** 已记录的风险或未完成原因，按填写顺序编号；未填写时返回空数组 */
+function recordedRisks(goals: Goal[]): string[] {
+  const items: string[] = []
+  for (const goal of goals) {
+    const risk = goal.risk?.trim()
+    if (!risk) continue
+    items.push(`${items.length < 20 ? String.fromCodePoint(0x2460 + items.length) : `${items.length + 1}、`}${goal.title.trim()}：${risk}`)
+  }
+  return items
+}
+
 export function localReport(workspace: Pick<Workspace, 'notes' | 'goals'> & { settings?: AiSettings }, request: ReportRequest): Report {
   const { start, end } = requestPeriod(request)
   const { notes, goals } = selectSources(workspace, request)
   if (!goals.length) throw new Error('所选范围内没有可用于生成报告的待办事项')
   const stats = statisticsFor([], goals)
   const title = `${shortDate(start)}${start !== end ? ` — ${shortDate(end)}` : ''}工作${typeNames[request.type]}`
-  const list = (items: Goal[]) => items.length ? items.map(goal => `- [${goal.completed ? 'x' : ' '}] ${goal.project?.trim() ? `【${goal.project.trim()}】` : ''}${goal.title}（${shortDate(goal.date)}${goal.actualMin === undefined ? '' : `，耗时 ${formatMinutes(goal.actualMin)}`}）`).join('\n') : '暂无'
+  const list = (items: Goal[]) => items.length ? items.map(goal => `- [${goal.completed ? 'x' : ' '}] ${goal.project?.trim() ? `【${goal.project.trim()}】` : ''}${goal.title}${goal.adHoc ? '（插活）' : ''}（${shortDate(goal.date)}${goal.actualMin === undefined ? '' : `，耗时 ${formatMinutes(goal.actualMin)}`}）`).join('\n') : '暂无'
   const daily = [...new Set(goals.map(goal => goal.date))].sort().map(date => `### ${shortDate(date)}\n\n${list(goals.filter(goal => goal.date === date))}`).join('\n\n')
   const completed = goals.filter(goal => goal.completed)
   const unfinished = goals.filter(goal => !goal.completed)
+  const risks = recordedRisks(unfinished)
   const period = { daily: '今日', weekly: '本周', monthly: '本月' }[request.type]
   const timeNote = timeSummary(goals)
   const summary = `${period}共 ${stats.goals} 项待办，已完成 ${stats.completed} 项，待推进 ${unfinished.length} 项。${timeNote ? `\n${timeNote}` : ''}`
@@ -323,9 +339,9 @@ export function localReport(workspace: Pick<Workspace, 'notes' | 'goals'> & { se
     汇报摘要: summary,
     月度目标达成情况: `${summary}\n月度目标、验收标准及达成情况：待确认`,
     重点项目成果与实际影响: projectItems(completed, { label: '成果或进度', confirmation: '实际影响' }),
-    风险与协调事项: '风险、进度影响及需协调事项：待确认',
+    风险与协调事项: risks.length ? `风险、进度影响及需协调事项：\n${risks.join('\n')}${risks.length < unfinished.length ? `\n其余 ${unfinished.length - risks.length} 项未记录风险或问题：待确认` : ''}` : '风险、进度影响及需协调事项：待确认',
     下阶段重点任务与交付: projectItems(unfinished, { label: '重点任务', confirmation: '预期交付及完成时间' }),
-    未完成事项与原因: unfinished.length ? `待推进事项：\n${projectItems(unfinished)}\n\n未完成原因：待确认` : '所选范围内无未完成待办。',
+    未完成事项与原因: unfinished.length ? `待推进事项：\n${projectItems(unfinished)}\n\n未完成原因：${risks.length ? `\n${risks.join('\n')}` : '待确认'}` : '所选范围内无未完成待办。',
     项目完成情况: projectItems(goals.filter(goal => goal.completed)),
     项目计划: projectItems(goals.filter(goal => !goal.completed)),
     概况: `${stats.days} 天，共 ${stats.goals} 项待办，已完成 ${stats.completed} 项，完成率 ${stats.completionRate}%。${timeNote ? `\n${timeNote}` : ''}`,

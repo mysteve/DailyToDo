@@ -137,6 +137,24 @@ describe('按用户选择的周期整理报告', () => {
     expect(monthly.markdown).toContain('所选范围内无未完成待办。')
     expect(monthly.markdown).toContain('月度目标、验收标准及达成情况：待确认')
   })
+  it('待办填写的风险或原因进入报告，未填写时仍标记待确认', () => {
+    const goals = [
+      { ...goal('2026-10-09', false), title: '接口联调', risk: '依赖外部联调环境，本日无法完成' },
+      { ...goal('2026-10-09', false), title: '采购询价' },
+    ]
+    const monthly = { ...request, type: 'monthly' } as const
+    const report = localReport({ notes: [], goals }, monthly)
+    expect(report.markdown).toContain('风险、进度影响及需协调事项：\n①接口联调：依赖外部联调环境，本日无法完成')
+    expect(report.markdown).toContain('其余 1 项未记录风险或问题：待确认')
+    expect(report.markdown).toContain('未完成原因：\n①接口联调：依赖外部联调环境，本日无法完成')
+    const plain = localReport({ notes: [], goals: [goal('2026-10-09', false)] }, monthly)
+    expect(plain.markdown).toContain('风险、进度影响及需协调事项：待确认')
+    expect(plain.markdown).toContain('未完成原因：待确认')
+    const templates = { ...defaultReportTemplates, daily: '{{未完成待办}}' }
+    const settings = { endpoint: '', model: '', hasApiKey: false, reportTemplates: templates }
+    const adhoc = localReport({ notes: [], goals: [{ ...goal('2026-10-09', false), title: '临时插入', adHoc: true }], settings }, { ...request, type: 'daily' })
+    expect(adhoc.markdown).toContain('临时插入（插活）')
+  })
   it('旧默认模板自动更新，自定义模板和旧变量保持可用', () => {
     const previous = '# {{标题}}\n\n{{范围}}\n\n## 今日概况\n{{概况}}\n\n## 今日完成\n{{已完成待办}}\n\n## 待继续推进\n{{未完成待办}}'
     const custom = '自定义周报\n{{已完成待办}}'

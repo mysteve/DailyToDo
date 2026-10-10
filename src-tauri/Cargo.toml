@@ -27,6 +27,9 @@ tokio = { version = "1", features = ["sync"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3.6", features = ["windows-native"] }
+# 关闭 WebView2 的常规自动填充需要直接调用 COM 接口；版本需与 wry/tauri 使用的 webview2-com 保持一致。
+webview2-com = "0.39"
+windows-core = "0.62"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3.6", features = ["apple-native"] }

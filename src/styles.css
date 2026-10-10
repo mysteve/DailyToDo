@@ -463,7 +463,7 @@ textarea { resize: vertical; min-height: 75px; }
 
 .settings-body .modal-footer { position: sticky; bottom: 0; z-index: 2; background: var(--surface); padding: 16px 0; margin-bottom: -16px; }
 
-/* 待办扩展：项目、优先级、耗时、顺延 */
+/* 待办扩展：项目、优先级、耗时、顺延、风险原因与插活 */
 .goal-body { display: flex; flex-direction: column; min-width: 0; }
 .goal-title { overflow-wrap: anywhere; }
 .priority-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 7px; vertical-align: 1px; background: #c8d2e3; }
@@ -471,7 +471,10 @@ textarea { resize: vertical; min-height: 75px; }
 .priority-dot.low { background: #9db1f5; }
 .goal-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 12px; line-height: 1.5; color: var(--muted); margin-top: 1px; }
 .project-chip { font-style: normal; color: var(--accent); background: #eef2fe; border-radius: 4px; padding: 0 6px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mini-menu { width: 124px; }
+.mini-menu { width: 138px; }
+.adhoc-chip { flex: none; white-space: nowrap; font-style: normal; margin-left: 7px; padding: 0 6px; border-radius: 4px; background: #fff1f0; color: #c04444; font-size: 11px; }
+.goal-risk { font-size: 12px; line-height: 1.5; color: #8a6414; overflow-wrap: anywhere; }
+.goal-adhoc-field { margin-top: 14px; }
 .carry-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; padding: 9px 12px; border-radius: 6px; background: #fff8e8; color: #8a6414; font-size: 12px; }
 .carry-banner > span { display: inline-flex; align-items: center; gap: 6px; }
 .carry-banner .text-button { color: var(--accent); white-space: nowrap; }

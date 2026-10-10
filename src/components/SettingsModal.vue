@@ -136,7 +136,7 @@ async function backup(importing: boolean) {
       <div class="settings-section-heading"><FileText :size="18" /><h3>报告模板</h3></div>
       <div class="segmented template-tabs"><button v-for="type in (['daily', 'weekly', 'monthly'] as const)" :key="type" type="button" :class="{ active: templateType === type }" :aria-pressed="templateType === type" @click="templateType = type">{{ typeNames[type] }}</button></div>
       <label class="field-label" for="report-template">{{ typeNames[templateType] }}模板 <button type="button" class="text-button" @click="reportTemplates[templateType] = defaultReportTemplates[templateType]">恢复默认</button></label>
-      <textarea id="report-template" ref="templateEditor" v-model="reportTemplates[templateType]" rows="10" maxlength="10000" required />
+      <textarea id="report-template" ref="templateEditor" v-model="reportTemplates[templateType]" rows="10" maxlength="10000" autocomplete="off" required />
       <p class="field-help">仅使用所选日期内的待办事项生成报告。</p>
       <details class="template-help"><summary>插入模板变量</summary><div class="template-variables"><button v-for="variable in templateVariables" :key="variable" type="button" class="button secondary compact" @click="insertVariable(variable)">{{ variable }}</button></div><p class="field-help">支持自定义占位符。AI 根据待办填写，缺少依据时标记待确认；本地整理将自定义字段标记为待填写。</p></details>
       <div class="settings-divider" />
@@ -144,10 +144,10 @@ async function backup(importing: boolean) {
       <div class="settings-section-heading"><Sparkles :size="18" /><h3>AI 服务</h3><span class="status-pill" :class="{ configured: workspace.settings.model }">{{ workspace.settings.model ? '已配置' : '未配置' }}</span></div>
       <div class="service-presets"><button class="text-button" type="button" :disabled="modelsRefreshing || testing" @click="endpoint = 'https://api.openai.com/v1'">兼容 OpenAI</button><span>·</span><button class="text-button" type="button" :disabled="modelsRefreshing || testing" @click="endpoint = 'http://127.0.0.1:11434/v1'">本地 Ollama</button></div>
       <label class="field-label" for="ai-endpoint">接口地址</label>
-      <input id="ai-endpoint" v-model="endpoint" type="url" maxlength="1000" placeholder="https://your-service.com/v1" :disabled="modelsRefreshing || testing" required />
+      <input id="ai-endpoint" v-model="endpoint" type="url" maxlength="1000" autocomplete="off" placeholder="https://your-service.com/v1" :disabled="modelsRefreshing || testing" required />
       <label class="field-label" for="ai-model">模型名称</label>
       <div class="model-input-row">
-        <input id="ai-model" v-model="model" list="ai-models" maxlength="200" placeholder="选择或填写模型名称" :disabled="testing" />
+        <input id="ai-model" v-model="model" list="ai-models" maxlength="200" autocomplete="off" placeholder="选择或填写模型名称" :disabled="testing" />
         <datalist id="ai-models"><option v-for="id in models" :key="id" :value="id" /></datalist>
         <button type="button" class="button secondary compact" aria-label="刷新模型列表" :disabled="!desktop || modelsRefreshing || testing || busy" @click="refreshModels"><LoaderCircle v-if="modelsRefreshing" class="spin" :size="14" /><RefreshCw v-else :size="14" />{{ modelsRefreshing ? '刷新中…' : '刷新' }}</button>
       </div>
@@ -164,7 +164,7 @@ async function backup(importing: boolean) {
       <label class="checkbox-label"><input v-model="gitEnabled" type="checkbox" />允许生成 AI 报告时附带我的 Git 提交记录</label>
       <label class="field-label" for="git-provider">代码平台</label>
       <select id="git-provider" v-model="gitProvider" :disabled="gitTesting"><option value="github">GitHub</option><option value="gitlab">GitLab</option></select>
-      <template v-if="gitProvider === 'gitlab'"><label class="field-label" for="git-gitlab-url">GitLab 地址 <span>自建服务请修改</span></label><input id="git-gitlab-url" v-model="gitlabUrl" type="url" maxlength="1000" placeholder="https://gitlab.com" :disabled="gitTesting" /></template>
+      <template v-if="gitProvider === 'gitlab'"><label class="field-label" for="git-gitlab-url">GitLab 地址 <span>自建服务请修改</span></label><input id="git-gitlab-url" v-model="gitlabUrl" type="url" maxlength="1000" autocomplete="off" placeholder="https://gitlab.com" :disabled="gitTesting" /></template>
       <label class="field-label" for="git-token">访问令牌 <span>{{ gitProvider === 'github' ? '需要 repo 读取权限' : '需要 read_api 权限' }}</span></label>
       <div class="key-input"><KeyRound :size="16" /><input id="git-token" v-model="gitToken" type="password" maxlength="8192" autocomplete="off" :disabled="!desktop || clearGitToken || gitTesting" :placeholder="tokenKept() ? '已保存令牌 · 留空保持' : '填写你的访问令牌'" /></div>
       <p class="field-help">{{ desktop ? '令牌保存在系统凭据库，只用于读取你本人的提交。切换平台或 GitLab 地址时，请重新填写令牌。' : '浏览器仅供界面预览，Git 提交请在桌面应用中配置。' }}</p>

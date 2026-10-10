@@ -104,6 +104,9 @@ pub fn validate_goal(goal: &Goal) -> Result<(), String> {
     if goal.project.chars().count() > 40 || goal.project.contains('\n') {
         return Err("项目名称不能超过 40 字，且需在一行内".into());
     }
+    if goal.risk.chars().count() > 300 || goal.risk.contains('\n') {
+        return Err("风险／原因不能超过 300 字，且需在一行内".into());
+    }
     for minutes in [goal.estimate_min, goal.actual_min].into_iter().flatten() {
         if minutes > MAX_MINUTES {
             return Err("耗时需在 0 至 100000 分钟之间".into());
@@ -552,6 +555,7 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         assert!(loaded[0].project.is_empty() && loaded[0].actual_min.is_none());
         assert!(loaded[0].completed_at.is_none());
+        assert!(loaded[0].risk.is_empty() && !loaded[0].ad_hoc);
         let mut rich = goal();
         rich.project = "官网改版".into();
         rich.priority = Some(Priority::High);
@@ -561,6 +565,8 @@ mod tests {
         rich.completed_at = Some("2026-10-09T11:00:00+08:00".into());
         rich.origin_date = Some("2026-10-07".into());
         rich.carry_count = 2;
+        rich.risk = "依赖外部评审，本日无法完成".into();
+        rich.ad_hoc = true;
         save_goal(&connection, &rich).unwrap();
         let stored = load(&connection, String::new())
             .unwrap()
@@ -576,6 +582,8 @@ mod tests {
         );
         assert_eq!(stored.origin_date.as_deref(), Some("2026-10-07"));
         assert_eq!(stored.carry_count, 2);
+        assert_eq!(stored.risk, "依赖外部评审，本日无法完成");
+        assert!(stored.ad_hoc);
     }
 
     #[test]
@@ -596,6 +604,11 @@ mod tests {
         assert!(validate_goal(&item).is_err());
         item = goal();
         item.origin_date = Some("2026-02-30".into());
+        assert!(validate_goal(&item).is_err());
+        item = goal();
+        item.risk = "风".repeat(301);
+        assert!(validate_goal(&item).is_err());
+        item.risk = "两\n行".into();
         assert!(validate_goal(&item).is_err());
     }
 

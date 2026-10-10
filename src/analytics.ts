@@ -168,11 +168,17 @@ export function backlog(goals: Goal[], today: string): BacklogItem[] {
     .sort((a, b) => b.ageDays - a.ageDays || (b.goal.carryCount || 0) - (a.goal.carryCount || 0))
 }
 
-/** 把未完成待办顺延到指定日期，保留首次计划日期并累计顺延次数；不会改动已完成或已在目标日期的待办 */
-export function carryOver(goals: Goal[], toDate: string, now = new Date().toISOString()): Goal[] {
+/** 把未完成待办顺延到指定日期，保留首次计划日期、已有风险说明并累计顺延次数；不会改动已完成或已在目标日期的待办 */
+export function carryOver(goals: Goal[], toDate: string, options: { risk?: string; now?: string } = {}): Goal[] {
+  const now = options.now || new Date().toISOString()
+  const risk = options.risk?.trim()
   return goals
     .filter(goal => !goal.completed && goal.date < toDate)
-    .map(goal => ({ ...goal, date: toDate, originDate: goal.originDate || goal.date, carryCount: (goal.carryCount || 0) + 1, updatedAt: now }))
+    .map(goal => {
+      const next: Goal = { ...goal, date: toDate, originDate: goal.originDate || goal.date, carryCount: (goal.carryCount || 0) + 1, updatedAt: now }
+      if (risk) next.risk = risk
+      return next
+    })
 }
 
 /** 勾选或取消完成：写入或清除完成时间 */
@@ -218,10 +224,11 @@ const priorityText = { high: '高', normal: '中', low: '低' } as const
 
 /** 导出待办明细为 CSV，带 BOM 以便 Excel 正确识别中文 */
 export function goalsCsv(goals: Goal[]): string {
-  const header = ['计划日期', '首次计划日期', '待办', '项目', '状态', '完成时间', '优先级', '预估耗时(分钟)', '实际耗时(分钟)', '顺延次数']
+  const header = ['计划日期', '首次计划日期', '待办', '项目', '状态', '完成时间', '优先级', '预估耗时(分钟)', '实际耗时(分钟)', '顺延次数', '风险或原因', '插活']
   const rows = [...goals].sort((a, b) => a.date.localeCompare(b.date) || a.createdAt.localeCompare(b.createdAt)).map(goal => [
     goal.date, goal.originDate, goal.title, goalProject(goal) === uncategorized ? '' : goalProject(goal), goal.completed ? '已完成' : '未完成',
     goal.completedAt ? dateKey(new Date(goal.completedAt)) : '', goal.priority ? priorityText[goal.priority] : '', goal.estimateMin, goal.actualMin, goal.carryCount || 0,
+    goal.risk, goal.adHoc ? '是' : '',
   ].map(csvCell).join(','))
   return '\uFEFF' + [header.join(','), ...rows].join('\r\n') + '\r\n'
 }
