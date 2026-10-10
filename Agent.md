@@ -42,7 +42,7 @@
 | `src/api.ts` | 桌面 IPC 与浏览器预览的统一接口 |
 | `src/domain.ts`、`src/domain.test.ts` | 类型、日期范围、统计、本地报告及领域测试 |
 | `src/images.ts` | 图片预处理及浏览器 IndexedDB 存储 |
-| `src/components/JournalPage.vue` | 手记编辑、图片上传／粘贴、待办（项目、优先级、耗时、顺延）与快捷报告入口 |
+| `src/components/JournalPage.vue` | 手记编辑、图片上传／粘贴、待办（项目、优先级、耗时、顺延）；页面不放报告和统计卡片，生成入口在工作报告与统计概览页 |
 | `src/analytics.ts` | 统计概览与待办派生逻辑：周期、趋势、项目占比、积压、顺延、热力图、耗时解析与 CSV |
 | `src/components/ReportCenter.vue`、`src/components/DateRangePicker.vue` | 报告生成、历史、来源查看及日期范围选择 |
 | `src/components/InsightsPage.vue`、`src/components/CalendarPanel.vue` | 统计概览及日期导航 |

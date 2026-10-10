@@ -1,16 +1,14 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { ArrowRight, CalendarArrowDown, Check, ChevronLeft, ChevronRight, Clock, FileText, ImagePlus, LoaderCircle, MoreHorizontal, NotebookPen, Pencil, Plus, Trash2 } from '@lucide/vue'
+import { CalendarArrowDown, Check, Clock, ImagePlus, LoaderCircle, MoreHorizontal, NotebookPen, Pencil, Plus, Trash2 } from '@lucide/vue'
 import { api } from '../api'
 import { backlog, carryOver, minutesInput, parseMinutes, projectNames, toggled } from '../analytics'
-import { addDays, dateKey, formatMinutes, kindNames, parseDate, periodFor, priorityNames, shortDate, statisticsFor, typeNames, type DateRange, type Goal, type Priority, type ImageUpload, type Note, type NoteImage, type NoteKind, type ReportType } from '../domain'
+import { addDays, formatMinutes, kindNames, parseDate, priorityNames, shortDate, type Goal, type Priority, type ImageUpload, type Note, type NoteImage, type NoteKind } from '../domain'
 import { maxNoteImages, prepareImage } from '../images'
-import { busy, dateGoals, dateNotes, dateStatistics, mutate, notify, selectedDate, view, workspace } from '../store'
+import { busy, dateGoals, dateNotes, dateStatistics, mutate, notify, selectedDate, workspace } from '../store'
 import ModalShell from './ModalShell.vue'
-import DateRangePicker from './DateRangePicker.vue'
 import NoteImages from './NoteImages.vue'
 
-const emit = defineEmits<{ generate: [type: ReportType, anchorDate: string, range?: DateRange] }>()
 const filter = ref<NoteKind | 'all'>('all')
 const visibleNotes = computed(() => dateNotes.value.filter(note => filter.value === 'all' || note.kind === filter.value))
 const editing = ref<Note | null>(null)
@@ -37,60 +35,6 @@ const deletion = ref<{ type: 'note' | 'goal'; id: string } | null>(null)
 const goalMenu = ref('')
 const weekday = computed(() => new Intl.DateTimeFormat('zh-CN', { weekday: 'long' }).format(parseDate(selectedDate.value)))
 const heading = computed(() => `${parseDate(selectedDate.value).getMonth() + 1}月${parseDate(selectedDate.value).getDate()}日`)
-const reportType = ref<ReportType>('weekly')
-const reportAnchor = ref(selectedDate.value)
-const reportDates = ref<DateRange>(periodFor('weekly', selectedDate.value))
-const customRange = ref(false)
-const reportRangeOpen = ref(false)
-const reportPeriod = computed(() => reportType.value === 'daily' ? periodFor('daily', reportAnchor.value) : reportDates.value)
-const reportRange = computed(() => {
-  const { start, end } = reportPeriod.value
-  return start === end ? shortDate(start) : `${shortDate(start)} — ${shortDate(end, start.slice(0, 4) !== end.slice(0, 4))}`
-})
-const periodUnit = computed(() => ({ daily: '天', weekly: '周', monthly: '个月' })[reportType.value])
-watch(selectedDate, date => {
-  if (customRange.value && reportType.value !== 'daily') return
-  reportAnchor.value = date
-  reportDates.value = periodFor(reportType.value, date)
-})
-watch(reportType, type => {
-  customRange.value = false
-  reportAnchor.value = selectedDate.value
-  reportDates.value = periodFor(type, selectedDate.value)
-})
-const weekStats = computed(() => {
-  const { start, end } = periodFor('weekly', selectedDate.value)
-  return statisticsFor(workspace.value.notes.filter(note => note.date >= start && note.date <= end), workspace.value.goals.filter(goal => goal.date >= start && goal.date <= end))
-})
-function shiftReportPeriod(amount: number) {
-  const current = reportPeriod.value
-  let nextRange: DateRange
-  let nextAnchor: string
-  if (reportType.value === 'monthly') {
-    const shift = (value: string) => {
-      const date = parseDate(value)
-      const day = date.getDate()
-      date.setDate(1)
-      date.setMonth(date.getMonth() + amount)
-      date.setDate(Math.min(day, new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate()))
-      return dateKey(date)
-    }
-    nextAnchor = shift(current.start)
-    nextRange = customRange.value ? { start: shift(current.start), end: shift(current.end) } : periodFor('monthly', nextAnchor)
-  } else {
-    const offset = amount * (reportType.value === 'weekly' ? 7 : 1)
-    nextAnchor = addDays(reportAnchor.value, offset)
-    nextRange = { start: addDays(current.start, offset), end: addDays(current.end, offset) }
-  }
-  if ([nextRange.start, nextRange.end].some(date => date < '1900-01-01' || date > '9999-12-31')) return notify('日期必须在 1900 至 9999 年之间')
-  reportAnchor.value = nextAnchor
-  reportDates.value = nextRange
-}
-function chooseReportRange(range: DateRange) {
-  reportDates.value = range
-  reportAnchor.value = range.start
-  customRange.value = true
-}
 
 function openEditor(note?: Note) {
   editorVersion++
@@ -254,8 +198,6 @@ function time(value: string) { return new Intl.DateTimeFormat('zh-CN', { hour: '
         <datalist id="goal-projects"><option v-for="name in projects" :key="name" :value="name" /></datalist>
         <div v-if="overdue.length" class="carry-banner"><span><Clock :size="14" />往日有 {{ overdue.length }} 项未完成</span><button class="text-button" :disabled="busy" @click="carryGoals(overdue.map(item => item.goal), selectedDate)">顺延到这天</button></div>
       </section>
-      <section class="panel report-panel"><div class="section-heading"><h2>工作报告</h2></div><div class="segmented report-type-selector" aria-label="报告周期"><button v-for="type in (['daily', 'weekly', 'monthly'] as const)" :key="type" :class="{ active: reportType === type }" :aria-pressed="reportType === type" @click="reportType = type">{{ typeNames[type] }}</button></div><div class="report-range"><button class="icon-button small period-step-previous" :disabled="reportRangeOpen" :aria-label="`前一${periodUnit}`" @click="shiftReportPeriod(-1)"><ChevronLeft :size="16" /></button><span v-if="reportType === 'daily'">{{ reportRange }}</span><DateRangePicker v-else :key="reportType" :model-value="reportDates" compact @update:model-value="chooseReportRange" @open-change="reportRangeOpen = $event" /><button class="icon-button small period-step-next" :disabled="reportRangeOpen" :aria-label="`后一${periodUnit}`" @click="shiftReportPeriod(1)"><ChevronRight :size="16" /></button></div><button class="button primary generate-quick" :disabled="reportRangeOpen" @click="emit('generate', reportType, reportAnchor, reportType === 'daily' ? undefined : reportPeriod)"><FileText :size="16" />生成报告</button></section>
-      <section class="panel week-panel"><div class="section-heading"><h2>本周统计</h2><button class="icon-button small" aria-label="查看统计概览" @click="view = 'insights'"><ArrowRight :size="16" /></button></div><div class="week-metrics"><div><strong>{{ weekStats.days }}</strong><span>记录天数</span></div><div><strong>{{ weekStats.notes }}</strong><span>工作记录</span></div><div><strong>{{ weekStats.completed }}</strong><span>完成待办</span></div></div></section>
     </aside>
   </div>
   <ModalShell v-if="editorOpen" :title="editing ? '编辑记录' : '写记录'" editor @close="closeEditor"><form class="modal-body note-editor-form" @paste="pasteImages" @submit.prevent="saveNote" @keydown.ctrl.enter.prevent="saveNote"><div class="form-date">{{ editing?.date || selectedDate }}</div><div class="segmented note-kind-selector"><button v-for="item in (['progress', 'note', 'blocker'] as const)" :key="item" type="button" :class="{ active: kind === item }" @click="kind = item">{{ kindNames[item] }}</button></div><label class="field-label" for="note-content">记录内容</label><textarea id="note-content" v-model="content" class="note-editor" rows="7" maxlength="32000" placeholder="写下工作进展、备忘或问题，可粘贴图片…" />
