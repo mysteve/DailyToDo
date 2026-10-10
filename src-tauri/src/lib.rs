@@ -1,5 +1,6 @@
 mod ai;
 mod db;
+mod git;
 mod images;
 mod models;
 mod reports;
@@ -7,7 +8,7 @@ mod reports;
 use models::*;
 use rusqlite::Connection;
 use std::sync::{Mutex, MutexGuard};
-use tauri::{Manager, State};
+use tauri::{LogicalSize, Manager, PhysicalPosition, PhysicalSize, State};
 use tauri_plugin_dialog::DialogExt;
 
 struct AppState {
@@ -27,6 +28,7 @@ fn database(state: &AppState) -> Result<MutexGuard<'_, Connection>, String> {
 fn load_workspace(state: State<'_, AppState>) -> Result<Workspace, String> {
     let mut workspace = db::load(&*database(&state)?, state.storage_path.clone())?;
     workspace.settings.has_api_key = ai::read_key().ok().flatten().is_some();
+    workspace.settings.git.has_token = git::read_token().ok().flatten().is_some();
     Ok(workspace)
 }
 
@@ -55,6 +57,11 @@ fn save_goal(state: State<'_, AppState>, goal: Goal) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn save_goals(state: State<'_, AppState>, goals: Vec<Goal>) -> Result<(), String> {
+    db::save_goals(&*database(&state)?, &goals)
+}
+
+#[tauri::command]
 fn delete_goal(state: State<'_, AppState>, id: String) -> Result<(), String> {
     db::delete(&*database(&state)?, "goals", &id)
 }
@@ -70,15 +77,30 @@ fn save_ai_settings(
     mut settings: AiSettings,
     api_key: String,
     clear_key: bool,
+    git_token: String,
+    clear_git_token: bool,
 ) -> Result<(), String> {
     ai::endpoint(&settings.endpoint)?;
-    if settings.model.chars().count() > 200 || api_key.len() > 8192 {
+    settings.report_templates.validate()?;
+    if settings.model.chars().count() > 200 || api_key.len() > 8192 || git_token.len() > 8192 {
         return Err("模型名称或密钥过长".into());
     }
+    git::normalize(&mut settings.git)?;
     let db = database(&state)?;
     let previous = db::settings(&db)?;
     settings.endpoint = settings.endpoint.trim().trim_end_matches('/').to_string();
     settings.model = settings.model.trim().to_string();
+    let git_changed = settings.git.provider != previous.git.provider
+        || (settings.git.provider == GitProvider::Gitlab
+            && settings.git.gitlab_url != previous.git.gitlab_url);
+    if clear_git_token || (git_changed && git_token.trim().is_empty()) {
+        git::clear_token()?;
+    }
+    if !git_token.trim().is_empty() && !clear_git_token {
+        git::credential()?
+            .set_password(git_token.trim())
+            .map_err(|_| "无法将令牌保存到系统凭据存储")?;
+    }
     if clear_key || (settings.endpoint != previous.endpoint && api_key.trim().is_empty()) {
         ai::clear_key()?;
     }
@@ -88,6 +110,66 @@ fn save_ai_settings(
             .map_err(|_| "无法将密钥保存到系统凭据存储")?;
     }
     db::save_settings(&db, &settings)
+}
+
+#[tauri::command]
+async fn test_git_connection(
+    state: State<'_, AppState>,
+    git: GitSettings,
+    token: String,
+) -> Result<String, String> {
+    if token.len() > 8192 {
+        return Err("令牌过长".into());
+    }
+    let mut git = git;
+    git::normalize(&mut git)?;
+    let token = if token.trim().is_empty() {
+        let previous = db::settings(&*database(&state)?)?.git;
+        if previous.provider != git.provider
+            || (git.provider == GitProvider::Gitlab && previous.gitlab_url != git.gitlab_url)
+        {
+            return Err("请输入新的访问令牌".into());
+        }
+        git::read_token()?.ok_or("请先填写访问令牌")?
+    } else {
+        token.trim().to_string()
+    };
+    git::test(&git, &token).await
+}
+
+#[tauri::command]
+fn open_git_token_page(git: GitSettings) -> Result<(), String> {
+    git::open_token_page(&git)
+}
+
+#[tauri::command]
+async fn list_ai_models(
+    state: State<'_, AppState>,
+    endpoint: String,
+    api_key: String,
+    clear_key: bool,
+) -> Result<Vec<String>, String> {
+    if endpoint.len() > 1000 || api_key.len() > 8192 {
+        return Err("接口地址或密钥过长".into());
+    }
+    let requested_endpoint = ai::endpoint(&endpoint)?;
+    let _guard = state
+        .generation
+        .try_lock()
+        .map_err(|_| "AI 服务正在请求中，请稍后刷新模型")?;
+    let key = if clear_key {
+        None
+    } else if !api_key.trim().is_empty() {
+        Some(api_key.trim().to_string())
+    } else {
+        let previous = db::settings(&*database(&state)?)?;
+        if ai::endpoint(&previous.endpoint)? == requested_endpoint {
+            ai::read_key()?
+        } else {
+            None
+        }
+    };
+    ai::list_models(&endpoint, key.as_deref()).await
 }
 
 #[tauri::command]
@@ -113,7 +195,8 @@ async fn generate_report(
         .try_lock()
         .map_err(|_| "已有报告正在生成，请稍候")?;
     let (start, end) = reports::period(&request)?;
-    let (workspace, key) = {
+    let use_commits = request.mode == GenerationMode::Ai && request.include_commits;
+    let (workspace, key, git_token) = {
         let db = database(&state)?;
         let workspace = db::load(&db, state.storage_path.clone())?;
         let key = if request.mode == GenerationMode::Ai {
@@ -121,19 +204,28 @@ async fn generate_report(
         } else {
             None
         };
-        (workspace, key)
+        let git_token = if use_commits {
+            git::read_token()?
+        } else {
+            None
+        };
+        (workspace, key, git_token)
     };
-    let notes: Vec<_> = workspace
-        .notes
-        .into_iter()
-        .filter(|note| request.include_notes && note.date >= start && note.date <= end)
-        .collect();
     let goals: Vec<_> = workspace
         .goals
         .into_iter()
-        .filter(|goal| request.include_goals && goal.date >= start && goal.date <= end)
+        .filter(|goal| goal.date >= start && goal.date <= end)
         .collect();
-    let mut report = reports::make_report(&request, notes, goals)?;
+    let mut report = reports::make_report(&request, vec![], goals)?;
+    report.markdown = reports::render_template(&report, &workspace.settings.report_templates)?;
+    if use_commits {
+        let token = git_token.ok_or("请先在设置中配置 Git 访问令牌")?;
+        if !workspace.settings.git.enabled {
+            return Err("请先在设置中启用提交记录".into());
+        }
+        report.sources.commits =
+            git::fetch_commits(&workspace.settings.git, &token, &start, &end).await?;
+    }
     if request.mode == GenerationMode::Ai {
         report.markdown =
             ai::generate(&workspace.settings, key.as_deref(), &report, &request).await?;
@@ -185,6 +277,18 @@ async fn export_report(
 }
 
 #[tauri::command]
+async fn export_csv(app: tauri::AppHandle, name: String, content: String) -> Result<bool, String> {
+    if content.len() > 32 * 1024 * 1024 {
+        return Err("导出内容过大，请缩小日期范围".into());
+    }
+    let name = name.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "-");
+    if name.is_empty() || name.chars().count() > 120 {
+        return Err("文件名不正确".into());
+    }
+    save_file(app, name, content, "csv").await
+}
+
+#[tauri::command]
 async fn export_backup(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<bool, String> {
     let (workspace, images) = {
         let connection = database(&state)?;
@@ -193,6 +297,7 @@ async fn export_backup(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
         (workspace, images)
     };
     let backup = Backup {
+        report_templates: Some(workspace.settings.report_templates),
         version: 2,
         notes: workspace.notes,
         goals: workspace.goals,
@@ -244,29 +349,6 @@ async fn import_backup(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
     Ok(true)
 }
 
-#[tauri::command]
-fn import_examples(
-    state: State<'_, AppState>,
-    notes: Vec<Note>,
-    goals: Vec<Goal>,
-) -> Result<(), String> {
-    let mut db = database(&state)?;
-    let current = db::load(&db, String::new())?;
-    if !current.notes.is_empty() || !current.goals.is_empty() {
-        return Err("已有工作记录，无法载入示例".into());
-    }
-    db::import(
-        &mut db,
-        &Backup {
-            version: 1,
-            notes,
-            goals,
-            reports: vec![],
-            images: vec![],
-        },
-    )
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -281,6 +363,28 @@ pub fn run() {
                 storage_path: path.to_string_lossy().to_string(),
                 generation: tokio::sync::Mutex::new(()),
             });
+            if let Some(window) = app.get_webview_window("main") {
+                if let Some(monitor) = window.current_monitor()?.or(window.primary_monitor()?) {
+                    let area = monitor.work_area();
+                    let size = PhysicalSize::new(1600, 900);
+                    let logical = size.to_logical::<f64>(monitor.scale_factor());
+                    window.set_min_size(Some(LogicalSize::new(
+                        logical.width.min(640.0),
+                        logical.height.min(360.0),
+                    )))?;
+                    // Windows finalizes hidden frame offsets when the window is shown.
+                    window.show()?;
+                    window.set_size(size)?;
+                    let outer = window.outer_size()?;
+                    window.set_position(PhysicalPosition::new(
+                        area.position.x + (area.size.width.saturating_sub(outer.width) / 2) as i32,
+                        area.position.y
+                            + (area.size.height.saturating_sub(outer.height) / 2) as i32,
+                    ))?;
+                } else {
+                    window.show()?;
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -289,15 +393,19 @@ pub fn run() {
             read_note_image,
             delete_note,
             save_goal,
+            save_goals,
             delete_goal,
             delete_report,
             save_ai_settings,
+            test_git_connection,
+            open_git_token_page,
+            list_ai_models,
             test_ai_connection,
             generate_report,
             export_report,
+            export_csv,
             export_backup,
-            import_backup,
-            import_examples
+            import_backup
         ])
         .run(tauri::generate_context!())
         .expect("日迹启动失败");

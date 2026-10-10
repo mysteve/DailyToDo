@@ -8,16 +8,6 @@ pub enum NoteKind {
     Blocker,
 }
 
-impl NoteKind {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Note => "备忘",
-            Self::Progress => "进展",
-            Self::Blocker => "问题",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Note {
@@ -30,19 +20,6 @@ pub struct Note {
     pub updated_at: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<NoteImage>,
-}
-
-impl Note {
-    pub fn summary(&self) -> String {
-        if self.images.is_empty() {
-            return self.content.clone();
-        }
-        if self.content.is_empty() {
-            format!("附图 {} 张", self.images.len())
-        } else {
-            format!("{} · 附图 {} 张", self.content, self.images.len())
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -66,7 +43,15 @@ pub struct BackupImage {
     pub data: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Priority {
+    High,
+    Normal,
+    Low,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Goal {
     pub id: String,
@@ -75,6 +60,29 @@ pub struct Goal {
     pub completed: bool,
     pub created_at: String,
     pub updated_at: String,
+    /// 自由填写的项目名称，留空时回退到标题中的 `项目：事项` 写法。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub project: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<Priority>,
+    /// 预估耗时（分钟）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimate_min: Option<u32>,
+    /// 实际耗时（分钟）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_min: Option<u32>,
+    /// 勾选完成的时间（RFC 3339）；旧数据没有该字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+    /// 首次计划日期，顺延后保留原日期。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_date: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub carry_count: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -106,9 +114,9 @@ pub enum ReportStyle {
 impl ReportStyle {
     pub fn instruction(&self) -> &'static str {
         match self {
-            Self::Brief => "生成简洁汇报，按工作概况、工作成果、问题与阻碍、待推进待办组织，控制在 600 字以内。",
-            Self::Detailed => "生成详细汇报，按工作概况、成果与进展、每日工作记录、问题与阻碍、待推进待办组织。",
-            Self::Review => "生成个人复盘，按待办完成情况、过程与收获、问题与阻碍、下一步行动组织。推测必须标注为建议，未记录的收获不得编造。",
+            Self::Brief => "使用简洁汇报语气，控制在 600 字以内；章节和顺序以报告模板为准。",
+            Self::Detailed => "使用详细汇报语气，说明待办日期和状态；章节和顺序以报告模板为准。",
+            Self::Review => "使用个人复盘语气；章节和顺序以报告模板为准。推测必须标注为建议，未记录的收获不得编造。",
         }
     }
 }
@@ -133,6 +141,8 @@ pub struct ReportRequest {
     pub mode: GenerationMode,
     pub include_notes: bool,
     pub include_goals: bool,
+    #[serde(default)]
+    pub include_commits: bool,
     pub instruction: String,
 }
 
@@ -145,12 +155,54 @@ pub struct Statistics {
     pub completed: usize,
     pub blockers: usize,
     pub completion_rate: usize,
+    #[serde(default)]
+    pub estimate_minutes: u64,
+    #[serde(default)]
+    pub actual_minutes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Sources {
     pub notes: Vec<Note>,
     pub goals: Vec<Goal>,
+    #[serde(default)]
+    pub commits: Vec<Commit>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Commit {
+    pub date: String,
+    pub repository: String,
+    pub sha: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum GitProvider {
+    #[default]
+    Github,
+    Gitlab,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct GitSettings {
+    pub enabled: bool,
+    pub provider: GitProvider,
+    pub gitlab_url: String,
+    pub has_token: bool,
+}
+
+impl Default for GitSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: GitProvider::Github,
+            gitlab_url: "https://gitlab.com".into(),
+            has_token: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -178,6 +230,10 @@ pub struct AiSettings {
     pub model: String,
     #[serde(default)]
     pub has_api_key: bool,
+    #[serde(default)]
+    pub report_templates: ReportTemplates,
+    #[serde(default)]
+    pub git: GitSettings,
 }
 
 impl Default for AiSettings {
@@ -186,7 +242,82 @@ impl Default for AiSettings {
             endpoint: "https://api.openai.com/v1".into(),
             model: String::new(),
             has_api_key: false,
+            report_templates: ReportTemplates::default(),
+            git: GitSettings::default(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReportTemplates {
+    pub daily: String,
+    pub weekly: String,
+    pub monthly: String,
+}
+
+impl Default for ReportTemplates {
+    fn default() -> Self {
+        Self {
+            daily: "# 日报 {{日期年-月-日}}\n\n## 【总体情况】\n{{汇报摘要}}\n\n## 【重点工作与交付】\n{{重点项目成果与实际影响}}\n\n## 【风险与需协调事项】\n{{风险与协调事项}}\n\n## 【明日重点计划】\n{{下阶段重点任务与交付}}".into(),
+            weekly: "# 周报\n\n{{日期范围}}\n\n## 【本周总体情况】\n{{汇报摘要}}\n\n## 【重点项目与节点进展】\n{{重点项目成果与实际影响}}\n\n## 【进度风险与需协调事项】\n{{风险与协调事项}}\n\n## 【下周重点计划】\n{{下阶段重点任务与交付}}".into(),
+            monthly: "# 月报\n\n{{日期范围}}\n\n## 【月度目标达成情况】\n{{月度目标达成情况}}\n\n## 【主要成果与业务价值】\n{{重点项目成果与实际影响}}\n\n## 【未完成事项与原因】\n{{未完成事项与原因}}\n\n## 【风险与需协调事项】\n{{风险与协调事项}}\n\n## 【下月重点计划】\n{{下阶段重点任务与交付}}".into(),
+        }
+    }
+}
+
+impl ReportTemplates {
+    pub fn upgrade_defaults(&mut self) {
+        let defaults = Self::default();
+        for (value, default, period, kind, date, plan) in [
+            (
+                &mut self.daily,
+                defaults.daily,
+                "今日",
+                "日报",
+                "日期年-月-日",
+                "明日计划",
+            ),
+            (
+                &mut self.weekly,
+                defaults.weekly,
+                "本周",
+                "周报",
+                "日期范围",
+                "下周计划",
+            ),
+            (
+                &mut self.monthly,
+                defaults.monthly,
+                "本月",
+                "月报",
+                "日期范围",
+                "下月计划",
+            ),
+        ] {
+            let previous = format!("# {{{{标题}}}}\n\n{{{{范围}}}}\n\n## {period}概况\n{{{{概况}}}}\n\n## {period}完成\n{{{{已完成待办}}}}\n\n## 待继续推进\n{{{{未完成待办}}}}");
+            let progress = format!("{kind}{{{{{date}}}}}完成任务进度和计划\n\n【完成情况】：\n{{{{项目完成情况}}}}\n\n【遇到问题】\n无\n\n【{plan}】\n{{{{项目计划}}}}");
+            if *value == previous || *value == progress {
+                *value = default;
+            }
+        }
+    }
+
+    pub fn get(&self, kind: &ReportType) -> &str {
+        match kind {
+            ReportType::Daily => &self.daily,
+            ReportType::Weekly => &self.weekly,
+            ReportType::Monthly => &self.monthly,
+        }
+    }
+    pub fn validate(&self) -> Result<(), String> {
+        for kind in [ReportType::Daily, ReportType::Weekly, ReportType::Monthly] {
+            let value = self.get(&kind);
+            if value.trim().is_empty() || value.chars().count() > 10000 {
+                return Err(format!("{}模板需填写，且不能超过 10000 字", kind.label()));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -202,6 +333,12 @@ pub struct Workspace {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Backup {
+    #[serde(
+        default,
+        rename = "reportTemplates",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub report_templates: Option<ReportTemplates>,
     pub version: u32,
     pub notes: Vec<Note>,
     pub goals: Vec<Goal>,

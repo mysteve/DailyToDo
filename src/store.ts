@@ -9,6 +9,7 @@ export const loading = ref(true)
 export const busy = ref(false)
 export const loadError = ref('')
 export const toast = ref('')
+export const modalOpen = ref(false)
 let toastTimer: ReturnType<typeof setTimeout>
 
 export function notify(message: string) {

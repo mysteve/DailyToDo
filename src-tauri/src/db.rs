@@ -57,8 +57,11 @@ pub fn settings(connection: &Connection) -> Result<AiSettings, String> {
         })
         .optional()
         .map_err(|e| e.to_string())?;
-    raw.map(|value| serde_json::from_str(&value).map_err(|e| e.to_string()))
-        .unwrap_or_else(|| Ok(AiSettings::default()))
+    let mut config: AiSettings = raw
+        .map(|value| serde_json::from_str(&value).map_err(|e| e.to_string()))
+        .unwrap_or_else(|| Ok(AiSettings::default()))?;
+    config.report_templates.upgrade_defaults();
+    Ok(config)
 }
 
 pub fn validate_id(id: &str) -> Result<(), String> {
@@ -98,7 +101,47 @@ pub fn validate_goal(goal: &Goal) -> Result<(), String> {
     if goal.title.trim().is_empty() || goal.title.chars().count() > 300 {
         return Err("待办需为 1 至 300 字".into());
     }
+    if goal.project.chars().count() > 40 || goal.project.contains('\n') {
+        return Err("项目名称不能超过 40 字，且需在一行内".into());
+    }
+    for minutes in [goal.estimate_min, goal.actual_min].into_iter().flatten() {
+        if minutes > MAX_MINUTES {
+            return Err("耗时需在 0 至 100000 分钟之间".into());
+        }
+    }
+    match (&goal.completed_at, goal.completed) {
+        (Some(_), false) => return Err("未完成的待办不能有完成时间".into()),
+        (Some(value), true) => {
+            chrono::DateTime::parse_from_rfc3339(value).map_err(|_| "完成时间不正确")?;
+        }
+        _ => {}
+    }
+    if let Some(origin) = &goal.origin_date {
+        validate_date(origin)?;
+    }
+    if goal.carry_count > 1000 {
+        return Err("顺延次数不正确".into());
+    }
     validate_times(&goal.created_at, &goal.updated_at)
+}
+
+const MAX_MINUTES: u32 = 100_000;
+
+/// 在一个事务中保存多条待办，用于批量顺延；任一条无效时全部不写入。
+pub fn save_goals(connection: &Connection, goals: &[Goal]) -> Result<(), String> {
+    if goals.is_empty() || goals.len() > 500 {
+        return Err("一次最多处理 500 条待办".into());
+    }
+    for goal in goals {
+        validate_goal(goal)?;
+    }
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|e| e.to_string())?;
+    for goal in goals {
+        save_goal(&transaction, goal)?;
+    }
+    transaction.commit().map_err(|e| e.to_string())
 }
 
 fn validate_times(created: &str, updated: &str) -> Result<(), String> {
@@ -183,8 +226,10 @@ pub fn delete(connection: &Connection, entity: &str, id: &str) -> Result<(), Str
 }
 
 pub fn save_settings(connection: &Connection, settings: &AiSettings) -> Result<(), String> {
+    settings.report_templates.validate()?;
     let mut config = settings.clone();
     config.has_api_key = false;
+    config.git.has_token = false;
     let payload = serde_json::to_string(&config).map_err(|e| e.to_string())?;
     connection.execute("INSERT INTO settings(id, payload) VALUES (1, ?1) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload", params![payload]).map_err(|e| e.to_string())?;
     Ok(())
@@ -221,6 +266,12 @@ pub fn import(connection: &mut Connection, backup: &Backup) -> Result<(), String
         for goal in &report.sources.goals {
             validate_goal(goal)?;
         }
+        if report.sources.commits.len() > 2000 {
+            return Err("报告来源提交过多".into());
+        }
+    }
+    if let Some(templates) = &backup.report_templates {
+        templates.validate()?;
     }
     let transaction = connection.transaction().map_err(|e| e.to_string())?;
     let mut ids = std::collections::HashSet::new();
@@ -270,6 +321,11 @@ pub fn import(connection: &mut Connection, backup: &Backup) -> Result<(), String
             )
             .map_err(|e| e.to_string())?;
     }
+    if let Some(templates) = &backup.report_templates {
+        let mut config = settings(&transaction)?;
+        config.report_templates = templates.clone();
+        save_settings(&transaction, &config)?;
+    }
     images::prune(&transaction)?;
     transaction.commit().map_err(|e| e.to_string())
 }
@@ -301,6 +357,7 @@ mod tests {
         import(
             &mut connection,
             &Backup {
+                report_templates: None,
                 version: 1,
                 notes: vec![incoming],
                 goals: vec![],
@@ -321,6 +378,7 @@ mod tests {
         assert!(import(
             &mut connection,
             &Backup {
+                report_templates: None,
                 version: 1,
                 notes: vec![note(), invalid],
                 goals: vec![],
@@ -366,10 +424,24 @@ mod tests {
             mode: GenerationMode::Local,
             include_notes: true,
             include_goals: false,
+            include_commits: false,
             instruction: String::new(),
         };
-        let report = crate::reports::make_report(&request, workspace.notes, vec![]).unwrap();
-        assert!(report.markdown.contains("附图 1 张"));
+        let mut report = Report {
+            id: uuid::Uuid::new_v4().to_string(),
+            title: "旧版图片报告".into(),
+            r#type: request.r#type,
+            style: request.style,
+            mode: request.mode,
+            start_date: note.date.clone(),
+            end_date: note.date.clone(),
+            markdown: "附图 1 张".into(),
+            statistics: crate::reports::statistics(&workspace.notes, &[]),
+            created_at: note.created_at.clone(),
+            model: String::new(),
+            sources: Sources::default(),
+        };
+        report.sources.notes = workspace.notes;
         save_report(&connection, &report).unwrap();
         let before = images::read(&connection, &asset.image.id).unwrap();
         note.content = "保留文字，移除图片".into();
@@ -391,6 +463,7 @@ mod tests {
         let mut note = note();
         note.images.push(asset.image.clone());
         let backup = Backup {
+            report_templates: None,
             version: 2,
             notes: vec![note.clone()],
             goals: vec![],
@@ -400,6 +473,7 @@ mod tests {
         import(&mut original, &backup).unwrap();
         let workspace = load(&original, String::new()).unwrap();
         let encoded = serde_json::to_string(&Backup {
+            report_templates: None,
             version: 2,
             images: images::export(&original, &workspace).unwrap(),
             notes: workspace.notes,
@@ -415,6 +489,7 @@ mod tests {
         );
         let mut empty = open(Path::new(":memory:")).unwrap();
         let missing = Backup {
+            report_templates: None,
             version: 2,
             notes: vec![note],
             goals: vec![],
@@ -451,5 +526,151 @@ mod tests {
         assert!(save_note(&connection, &note).is_err());
         note.images = vec![asset.image; 10];
         assert!(validate_note(&note).is_err());
+    }
+    fn goal() -> Goal {
+        Goal {
+            id: uuid::Uuid::new_v4().to_string(),
+            date: "2026-10-09".into(),
+            title: "整理接口文档".into(),
+            created_at: "2026-10-09T09:00:00+08:00".into(),
+            updated_at: "2026-10-09T09:00:00+08:00".into(),
+            ..Goal::default()
+        }
+    }
+
+    #[test]
+    fn legacy_goal_payload_loads_and_new_fields_round_trip() {
+        let connection = open(Path::new(":memory:")).unwrap();
+        let legacy = r#"{"id":"11111111-1111-4111-8111-111111111111","date":"2026-10-09","title":"旧待办","completed":true,"createdAt":"2026-10-09T09:00:00+08:00","updatedAt":"2026-10-09T09:00:00+08:00"}"#;
+        connection
+            .execute(
+                "INSERT INTO goals(id, date, payload) VALUES (?1, ?2, ?3)",
+                params!["11111111-1111-4111-8111-111111111111", "2026-10-09", legacy],
+            )
+            .unwrap();
+        let loaded = load(&connection, String::new()).unwrap().goals;
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded[0].project.is_empty() && loaded[0].actual_min.is_none());
+        assert!(loaded[0].completed_at.is_none());
+        let mut rich = goal();
+        rich.project = "官网改版".into();
+        rich.priority = Some(Priority::High);
+        rich.estimate_min = Some(90);
+        rich.actual_min = Some(120);
+        rich.completed = true;
+        rich.completed_at = Some("2026-10-09T11:00:00+08:00".into());
+        rich.origin_date = Some("2026-10-07".into());
+        rich.carry_count = 2;
+        save_goal(&connection, &rich).unwrap();
+        let stored = load(&connection, String::new())
+            .unwrap()
+            .goals
+            .into_iter()
+            .find(|item| item.id == rich.id)
+            .unwrap();
+        assert_eq!(stored.project, "官网改版");
+        assert_eq!(stored.priority, Some(Priority::High));
+        assert_eq!(
+            (stored.estimate_min, stored.actual_min),
+            (Some(90), Some(120))
+        );
+        assert_eq!(stored.origin_date.as_deref(), Some("2026-10-07"));
+        assert_eq!(stored.carry_count, 2);
+    }
+
+    #[test]
+    fn goal_validation_rejects_bad_new_fields() {
+        let mut item = goal();
+        item.project = "项".repeat(41);
+        assert!(validate_goal(&item).is_err());
+        item.project = "两\n行".into();
+        assert!(validate_goal(&item).is_err());
+        item = goal();
+        item.actual_min = Some(100_001);
+        assert!(validate_goal(&item).is_err());
+        item = goal();
+        item.completed_at = Some("2026-10-09T11:00:00+08:00".into());
+        assert!(validate_goal(&item).is_err(), "未完成不能有完成时间");
+        item.completed = true;
+        item.completed_at = Some("昨天".into());
+        assert!(validate_goal(&item).is_err());
+        item = goal();
+        item.origin_date = Some("2026-02-30".into());
+        assert!(validate_goal(&item).is_err());
+    }
+
+    #[test]
+    fn batch_save_is_atomic() {
+        let connection = open(Path::new(":memory:")).unwrap();
+        let good = goal();
+        let mut bad = goal();
+        bad.title.clear();
+        assert!(save_goals(&connection, &[good.clone(), bad]).is_err());
+        assert!(load(&connection, String::new()).unwrap().goals.is_empty());
+        save_goals(&connection, &[good]).unwrap();
+        assert_eq!(load(&connection, String::new()).unwrap().goals.len(), 1);
+    }
+
+    #[test]
+    fn old_default_templates_upgrade_without_changing_custom_templates() {
+        let connection = open(Path::new(":memory:")).unwrap();
+        let mut config = AiSettings::default();
+        config.report_templates.daily = "# {{标题}}\n\n{{范围}}\n\n## 今日概况\n{{概况}}\n\n## 今日完成\n{{已完成待办}}\n\n## 待继续推进\n{{未完成待办}}".into();
+        config.report_templates.weekly = "自定义周报\n{{已完成待办}}".into();
+        config.report_templates.monthly = "月报{{日期范围}}完成任务进度和计划\n\n【完成情况】：\n{{项目完成情况}}\n\n【遇到问题】\n无\n\n【下月计划】\n{{项目计划}}".into();
+        save_settings(&connection, &config).unwrap();
+        let loaded = settings(&connection).unwrap();
+        assert_eq!(
+            loaded.report_templates.daily,
+            ReportTemplates::default().daily
+        );
+        assert_eq!(
+            loaded.report_templates.weekly,
+            config.report_templates.weekly
+        );
+        assert_eq!(loaded.endpoint, config.endpoint);
+        assert_eq!(
+            loaded.report_templates.monthly,
+            ReportTemplates::default().monthly
+        );
+    }
+
+    #[test]
+    fn templates_persist_and_backup_restores_them_without_replacing_ai_config() {
+        let mut connection = open(Path::new(":memory:")).unwrap();
+        let mut config = AiSettings::default();
+        config.model = "existing-model".into();
+        config.report_templates.daily = "自定义日模板\n{{已完成待办}}".into();
+        save_settings(&connection, &config).unwrap();
+        let loaded = settings(&connection).unwrap();
+        assert_eq!(loaded.report_templates.daily, config.report_templates.daily);
+        let backup = Backup {
+            version: 2,
+            notes: vec![],
+            goals: vec![],
+            reports: vec![],
+            images: vec![],
+            report_templates: Some(loaded.report_templates),
+        };
+        let encoded = serde_json::to_string(&backup).unwrap();
+        let mut incoming: Backup = serde_json::from_str(&encoded).unwrap();
+        incoming.report_templates.as_mut().unwrap().weekly = "备份周模板\n{{概况}}".into();
+        import(&mut connection, &incoming).unwrap();
+        let loaded = settings(&connection).unwrap();
+        assert_eq!(loaded.report_templates.weekly, "备份周模板\n{{概况}}");
+        assert_eq!(loaded.model, "existing-model");
+        incoming.report_templates.as_mut().unwrap().monthly.clear();
+        assert!(import(&mut connection, &incoming).is_err());
+        assert_eq!(
+            settings(&connection).unwrap().report_templates.monthly,
+            config.report_templates.monthly
+        );
+        let legacy: Backup =
+            serde_json::from_str(r#"{"version":1,"notes":[],"goals":[],"reports":[]}"#).unwrap();
+        import(&mut connection, &legacy).unwrap();
+        assert_eq!(
+            settings(&connection).unwrap().report_templates.weekly,
+            "备份周模板\n{{概况}}"
+        );
     }
 }

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { ArrowRight, Check, ChevronLeft, ChevronRight, CircleCheck, FileText, ImagePlus, LoaderCircle, MoreHorizontal, NotebookPen, Pencil, Plus, Trash2 } from '@lucide/vue'
+import { ArrowRight, CalendarArrowDown, Check, ChevronLeft, ChevronRight, Clock, FileText, ImagePlus, LoaderCircle, MoreHorizontal, NotebookPen, Pencil, Plus, Trash2 } from '@lucide/vue'
 import { api } from '../api'
-import { addDays, dateKey, kindNames, parseDate, periodFor, shortDate, statisticsFor, typeNames, type DateRange, type Goal, type ImageUpload, type Note, type NoteImage, type NoteKind, type ReportType } from '../domain'
+import { backlog, carryOver, minutesInput, parseMinutes, projectNames, toggled } from '../analytics'
+import { addDays, dateKey, formatMinutes, kindNames, parseDate, periodFor, priorityNames, shortDate, statisticsFor, typeNames, type DateRange, type Goal, type Priority, type ImageUpload, type Note, type NoteImage, type NoteKind, type ReportType } from '../domain'
 import { maxNoteImages, prepareImage } from '../images'
 import { busy, dateGoals, dateNotes, dateStatistics, mutate, notify, selectedDate, view, workspace } from '../store'
 import ModalShell from './ModalShell.vue'
@@ -12,7 +13,6 @@ import NoteImages from './NoteImages.vue'
 const emit = defineEmits<{ generate: [type: ReportType, anchorDate: string, range?: DateRange] }>()
 const filter = ref<NoteKind | 'all'>('all')
 const visibleNotes = computed(() => dateNotes.value.filter(note => filter.value === 'all' || note.kind === filter.value))
-const goalInput = ref('')
 const editing = ref<Note | null>(null)
 const editorOpen = ref(false)
 const content = ref('')
@@ -26,9 +26,15 @@ const imageInput = ref<HTMLInputElement>()
 let editorVersion = 0
 const editGoal = ref<Goal | null>(null)
 const editGoalTitle = ref('')
+const editGoalProject = ref('')
+const editGoalPriority = ref<Priority | ''>('')
+const editGoalEstimate = ref('')
+const editGoalActual = ref('')
+const creatingGoal = ref(false)
+const projects = computed(() => projectNames(workspace.value.goals))
+const overdue = computed(() => backlog(workspace.value.goals, selectedDate.value))
 const deletion = ref<{ type: 'note' | 'goal'; id: string } | null>(null)
 const goalMenu = ref('')
-const today = dateKey(new Date())
 const weekday = computed(() => new Intl.DateTimeFormat('zh-CN', { weekday: 'long' }).format(parseDate(selectedDate.value)))
 const heading = computed(() => `${parseDate(selectedDate.value).getMonth() + 1}月${parseDate(selectedDate.value).getDate()}日`)
 const reportType = ref<ReportType>('weekly')
@@ -158,21 +164,62 @@ async function saveNote() {
   if (success) closeEditor()
 }
 
-async function addGoal() {
-  if (!goalInput.value.trim() || busy.value) return
+function addGoal() {
+  if (busy.value) return
   const now = new Date().toISOString()
-  const success = await mutate(() => api.saveGoal({ id: crypto.randomUUID(), date: selectedDate.value, title: goalInput.value.trim(), completed: false, createdAt: now, updatedAt: now }))
-  if (success) goalInput.value = ''
+  openGoalEdit({ id: crypto.randomUUID(), date: selectedDate.value, title: '', completed: false, createdAt: now, updatedAt: now }, true)
 }
 
 async function toggleGoal(goal: Goal) {
-  await mutate(() => api.saveGoal({ ...goal, completed: !goal.completed, updatedAt: new Date().toISOString() }))
+  await mutate(() => api.saveGoal(toggled(goal)))
+}
+
+function openGoalEdit(goal: Goal, creating = false) {
+  creatingGoal.value = creating
+  editGoal.value = goal
+  editGoalTitle.value = goal.title
+  editGoalProject.value = goal.project || ''
+  editGoalPriority.value = goal.priority || ''
+  editGoalEstimate.value = minutesInput(goal.estimateMin)
+  editGoalActual.value = minutesInput(goal.actualMin)
+  goalMenu.value = ''
 }
 
 async function saveGoalEdit() {
   if (!editGoal.value || !editGoalTitle.value.trim()) return
-  const goal = { ...editGoal.value, title: editGoalTitle.value.trim(), updatedAt: new Date().toISOString() }
-  if (await mutate(() => api.saveGoal(goal), '待办已更新')) editGoal.value = null
+  let estimateMin: number | undefined
+  let actualMin: number | undefined
+  try {
+    estimateMin = parseMinutes(editGoalEstimate.value)
+    actualMin = parseMinutes(editGoalActual.value)
+  } catch (error) { return notify(error instanceof Error ? error.message : String(error)) }
+  const goal: Goal = { ...editGoal.value, title: editGoalTitle.value.trim(), updatedAt: new Date().toISOString() }
+  const optional = { project: editGoalProject.value.trim() || undefined, priority: editGoalPriority.value || undefined, estimateMin, actualMin }
+  for (const [key, value] of Object.entries(optional)) {
+    if (value === undefined) delete (goal as unknown as Record<string, unknown>)[key]
+    else (goal as unknown as Record<string, unknown>)[key] = value
+  }
+  const creating = creatingGoal.value
+  if (await mutate(() => api.saveGoal(goal), creating ? '待办已添加' : '待办已更新')) {
+    editGoal.value = null
+  }
+}
+
+watch(editGoal, goal => { if (!goal) creatingGoal.value = false })
+
+async function carryGoals(goals: Goal[], toDate: string) {
+  const moved = carryOver(goals, toDate)
+  if (!moved.length) return
+  const batches = Array.from({ length: Math.ceil(moved.length / 500) }, (_, index) => moved.slice(index * 500, index * 500 + 500))
+  await mutate(async () => { for (const batch of batches) await api.saveGoals(batch) }, `已顺延 ${moved.length} 项待办到 ${shortDate(toDate)}`)
+  goalMenu.value = ''
+}
+
+function goalMeta(goal: Goal): string[] {
+  const items: string[] = []
+  if (goal.actualMin !== undefined || goal.estimateMin !== undefined) items.push(goal.actualMin !== undefined ? `耗时 ${formatMinutes(goal.actualMin)}${goal.estimateMin ? ` / 预估 ${formatMinutes(goal.estimateMin)}` : ''}` : `预估 ${formatMinutes(goal.estimateMin!)}`)
+  if (goal.carryCount) items.push(`已顺延 ${goal.carryCount} 次`)
+  return items
 }
 
 async function confirmDelete() {
@@ -181,15 +228,12 @@ async function confirmDelete() {
   if (await mutate(() => type === 'note' ? api.deleteNote(id) : api.deleteGoal(id), '已删除')) deletion.value = null
 }
 
-async function loadExamples() { await mutate(() => api.loadExamples(), '已载入示例记录') }
-
 function time(value: string) { return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value)) }
 </script>
 
 <template>
   <div class="page-heading journal-page-heading">
     <div class="journal-title"><h1 :title="selectedDate">{{ heading }}</h1><span class="weekday">{{ weekday }}</span></div>
-    <div class="heading-actions"><div class="date-controls"><button class="icon-button" aria-label="前一天" @click="selectedDate = addDays(selectedDate, -1)"><ChevronLeft :size="17" /></button><button class="text-button" @click="selectedDate = today">今天</button><button class="icon-button" aria-label="后一天" @click="selectedDate = addDays(selectedDate, 1)"><ChevronRight :size="17" /></button></div><button class="button primary" @click="openEditor()"><Plus :size="17" />写记录</button></div>
   </div>
   <div class="journal-layout">
     <section class="journal-column">
@@ -201,12 +245,14 @@ function time(value: string) { return new Intl.DateTimeFormat('zh-CN', { hour: '
           <div class="note-card"><div class="note-card-top"><div class="note-labels"><span class="kind-label" :class="note.kind">{{ kindNames[note.kind] }}</span><span v-if="note.tag" class="tag-label">{{ note.tag }}</span></div><div class="note-actions"><button class="icon-button small" aria-label="编辑记录" @click="openEditor(note)"><Pencil :size="14" /></button><button class="icon-button small" aria-label="删除记录" @click="deletion = { type: 'note', id: note.id }"><Trash2 :size="14" /></button></div></div><p v-if="note.content" class="note-content">{{ note.content }}</p><NoteImages v-if="note.images?.length" :images="note.images" /><div v-if="note.updatedAt !== note.createdAt" class="edited-label">已编辑</div></div>
         </article>
       </div>
-      <div v-else class="empty-state journal-empty"><span class="empty-illustration"><NotebookPen :size="35" :stroke-width="1.5" /></span><h3>{{ dateNotes.length ? '暂无这类记录' : '暂无记录' }}</h3><button v-if="!workspace.notes.length && !workspace.goals.length" class="text-button example-button" :disabled="busy" @click="loadExamples">载入示例<ArrowRight :size="14" /></button></div>
+      <div v-else class="empty-state journal-empty"><span class="empty-illustration"><NotebookPen :size="35" :stroke-width="1.5" /></span><h3>{{ dateNotes.length ? '暂无这类记录' : '暂无记录' }}</h3></div>
     </section>
     <aside class="day-aside">
       <section class="panel goals-panel"><div class="section-heading"><h2>待办清单</h2><span class="subtle">{{ dateStatistics.completed }} / {{ dateStatistics.goals }}</span></div><div v-if="dateGoals.length" class="goal-progress"><div class="progress-track"><div :style="{ width: `${dateStatistics.completionRate}%` }" /></div><span>{{ dateStatistics.completionRate }}%</span></div>
-        <div class="goal-list"><div v-for="goal in dateGoals" :key="goal.id" class="goal-row" :class="{ complete: goal.completed }"><button class="goal-check" :class="{ checked: goal.completed }" :aria-label="`${goal.completed ? '取消完成' : '完成待办'}：${goal.title}`" :aria-pressed="goal.completed" :disabled="busy" @click="toggleGoal(goal)"><Check v-if="goal.completed" :size="13" /></button><span>{{ goal.title }}</span><div class="goal-menu-wrap"><button class="icon-button small" :aria-label="`待办操作：${goal.title}`" @click="goalMenu = goalMenu === goal.id ? '' : goal.id"><MoreHorizontal :size="15" /></button><div v-if="goalMenu === goal.id" class="mini-menu"><button @click="editGoal = goal; editGoalTitle = goal.title; goalMenu = ''"><Pencil :size="13" />编辑</button><button @click="deletion = { type: 'goal', id: goal.id }; goalMenu = ''"><Trash2 :size="13" />删除</button></div></div></div></div>
-        <p v-if="!dateGoals.length" class="empty-goals">暂无待办</p><form class="add-goal" @submit.prevent="addGoal"><Plus :size="17" /><input v-model="goalInput" aria-label="新增待办" placeholder="添加待办" maxlength="300" /><button v-if="goalInput.trim()" class="icon-button small" type="submit" aria-label="保存待办" :disabled="busy"><ArrowRight :size="16" /></button></form><div v-if="dateGoals.length && dateStatistics.completed === dateStatistics.goals" class="all-done"><CircleCheck :size="14" />今日待办已全部完成</div>
+        <div class="goal-list"><div v-for="goal in dateGoals" :key="goal.id" class="goal-row" :class="{ complete: goal.completed }"><button class="goal-check" :class="{ checked: goal.completed }" :aria-label="`${goal.completed ? '取消完成' : '完成待办'}：${goal.title}`" :aria-pressed="goal.completed" :disabled="busy" @click="toggleGoal(goal)"><Check v-if="goal.completed" :size="13" /></button><span class="goal-body"><span class="goal-title"><i v-if="goal.priority && goal.priority !== 'normal'" class="priority-dot" :class="goal.priority" :title="`优先级：${priorityNames[goal.priority]}`" />{{ goal.title }}</span><span v-if="goal.project || goalMeta(goal).length" class="goal-meta"><em v-if="goal.project" class="project-chip">{{ goal.project }}</em><span v-for="item in goalMeta(goal)" :key="item">{{ item }}</span></span></span><div class="goal-menu-wrap"><button class="icon-button small" :aria-label="`待办操作：${goal.title}`" @click="goalMenu = goalMenu === goal.id ? '' : goal.id"><MoreHorizontal :size="15" /></button><div v-if="goalMenu === goal.id" class="mini-menu"><button @click="openGoalEdit(goal)"><Pencil :size="13" />编辑</button><button v-if="!goal.completed" @click="carryGoals([goal], addDays(goal.date, 1))"><CalendarArrowDown :size="13" />顺延到次日</button><button @click="deletion = { type: 'goal', id: goal.id }; goalMenu = ''"><Trash2 :size="13" />删除</button></div></div></div></div>
+        <p v-if="!dateGoals.length" class="empty-goals">暂无待办</p><button class="add-goal" type="button" :disabled="busy" @click="addGoal"><Plus :size="17" /><span>添加待办</span></button>
+        <datalist id="goal-projects"><option v-for="name in projects" :key="name" :value="name" /></datalist>
+        <div v-if="overdue.length" class="carry-banner"><span><Clock :size="14" />往日有 {{ overdue.length }} 项未完成</span><button class="text-button" :disabled="busy" @click="carryGoals(overdue.map(item => item.goal), selectedDate)">顺延到这天</button></div>
       </section>
       <section class="panel report-panel"><div class="section-heading"><h2>工作报告</h2></div><div class="segmented report-type-selector" aria-label="报告周期"><button v-for="type in (['daily', 'weekly', 'monthly'] as const)" :key="type" :class="{ active: reportType === type }" :aria-pressed="reportType === type" @click="reportType = type">{{ typeNames[type] }}</button></div><div class="report-range"><button class="icon-button small period-step-previous" :disabled="reportRangeOpen" :aria-label="`前一${periodUnit}`" @click="shiftReportPeriod(-1)"><ChevronLeft :size="16" /></button><span v-if="reportType === 'daily'">{{ reportRange }}</span><DateRangePicker v-else :key="reportType" :model-value="reportDates" compact @update:model-value="chooseReportRange" @open-change="reportRangeOpen = $event" /><button class="icon-button small period-step-next" :disabled="reportRangeOpen" :aria-label="`后一${periodUnit}`" @click="shiftReportPeriod(1)"><ChevronRight :size="16" /></button></div><button class="button primary generate-quick" :disabled="reportRangeOpen" @click="emit('generate', reportType, reportAnchor, reportType === 'daily' ? undefined : reportPeriod)"><FileText :size="16" />生成报告</button></section>
       <section class="panel week-panel"><div class="section-heading"><h2>本周统计</h2><button class="icon-button small" aria-label="查看统计概览" @click="view = 'insights'"><ArrowRight :size="16" /></button></div><div class="week-metrics"><div><strong>{{ weekStats.days }}</strong><span>记录天数</span></div><div><strong>{{ weekStats.notes }}</strong><span>工作记录</span></div><div><strong>{{ weekStats.completed }}</strong><span>完成待办</span></div></div></section>
@@ -215,6 +261,6 @@ function time(value: string) { return new Intl.DateTimeFormat('zh-CN', { hour: '
   <ModalShell v-if="editorOpen" :title="editing ? '编辑记录' : '写记录'" editor @close="closeEditor"><form class="modal-body note-editor-form" @paste="pasteImages" @submit.prevent="saveNote" @keydown.ctrl.enter.prevent="saveNote"><div class="form-date">{{ editing?.date || selectedDate }}</div><div class="segmented note-kind-selector"><button v-for="item in (['progress', 'note', 'blocker'] as const)" :key="item" type="button" :class="{ active: kind === item }" @click="kind = item">{{ kindNames[item] }}</button></div><label class="field-label" for="note-content">记录内容</label><textarea id="note-content" v-model="content" class="note-editor" rows="7" maxlength="32000" placeholder="写下工作进展、备忘或问题，可粘贴图片…" />
       <div class="image-attach-toolbar"><button class="text-button" type="button" :disabled="busy || preparingImages || attachedImages.length >= maxNoteImages" title="最多 9 张，单张不超过 20 MB" @click="imageInput?.click()"><LoaderCircle v-if="preparingImages" class="spin" :size="16" /><ImagePlus v-else :size="16" />{{ preparingImages ? '处理图片…' : '上传图片' }}</button><span v-if="attachedImages.length" class="subtle">{{ attachedImages.length }} / {{ maxNoteImages }}</span><input ref="imageInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp,image/avif" multiple hidden aria-label="上传记录图片" @change="uploadImages" /></div>
       <NoteImages v-if="attachedImages.length" :images="attachedImages" :urls="imageUrls" editable :disabled="busy || preparingImages" @remove="removeImage" /><label class="field-label" for="note-tag">标签 <span>选填</span></label><input id="note-tag" v-model="tag" placeholder="添加标签" maxlength="40" /><footer class="modal-footer"><span class="subtle">Ctrl + Enter 保存</span><button class="button primary" type="submit" :disabled="busy || preparingImages || (!content.trim() && !attachedImages.length)"><LoaderCircle v-if="busy" class="spin" :size="16" />保存记录</button></footer></form></ModalShell>
-  <ModalShell v-if="editGoal" title="编辑待办" @close="editGoal = null"><form class="modal-body" @submit.prevent="saveGoalEdit"><label class="field-label" for="goal-title">待办内容</label><input id="goal-title" v-model="editGoalTitle" maxlength="300" required /><footer class="modal-footer"><button class="button secondary" type="button" @click="editGoal = null">取消</button><button class="button primary" type="submit" :disabled="busy || !editGoalTitle.trim()">保存待办</button></footer></form></ModalShell>
+  <ModalShell v-if="editGoal" :title="creatingGoal ? '新增待办' : '编辑待办'" @close="editGoal = null"><form class="modal-body" @submit.prevent="saveGoalEdit"><label class="field-label" for="goal-title">待办内容</label><input id="goal-title" v-model="editGoalTitle" maxlength="300" required placeholder="要做什么" autofocus /><label class="field-label" for="goal-project">项目 <span>选填，可直接输入新项目</span></label><input id="goal-project" v-model="editGoalProject" list="goal-projects" maxlength="40" placeholder="例如：客户 A、季度复盘" /><div class="field-label">优先级 <span>选填</span></div><div class="segmented goal-priority-selector"><button v-for="item in ([['', '未设置'], ['high', '高'], ['normal', '中'], ['low', '低']] as const)" :key="item[0]" type="button" :class="{ active: editGoalPriority === item[0] }" :aria-pressed="editGoalPriority === item[0]" @click="editGoalPriority = item[0]">{{ item[1] }}</button></div><div class="goal-time-fields"><div><label class="field-label" for="goal-estimate">预估耗时 <span>选填</span></label><input id="goal-estimate" v-model="editGoalEstimate" inputmode="text" placeholder="90、1.5h 或 1h30m" /></div><div><label class="field-label" for="goal-actual">实际耗时 <span>选填</span></label><input id="goal-actual" v-model="editGoalActual" inputmode="text" placeholder="分钟数，如 45" /></div></div><footer class="modal-footer"><button class="button secondary" type="button" @click="editGoal = null">取消</button><button class="button primary" type="submit" :disabled="busy || !editGoalTitle.trim()">{{ creatingGoal ? '添加待办' : '保存待办' }}</button></footer></form></ModalShell>
   <ModalShell v-if="deletion" title="删除记录" @close="deletion = null"><div class="modal-body"><p class="confirm-copy">删除后无法恢复，已生成的报告保留原有内容。</p><footer class="modal-footer"><button class="button secondary" @click="deletion = null">取消</button><button class="button danger" :disabled="busy" @click="confirmDelete">删除</button></footer></div></ModalShell>
 </template>

@@ -3,7 +3,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { Copy, Minus, Square, X } from '@lucide/vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import type { UnlistenFn } from '@tauri-apps/api/event'
-import { notify } from '../store'
+import { modalOpen, notify } from '../store'
 
 const appWindow = getCurrentWindow()
 const maximized = ref(false)
@@ -41,7 +41,7 @@ onBeforeUnmount(() => { disposed = true; unlisten?.() })
 
 <template>
   <div class="window-controls-space" aria-hidden="true" />
-  <Teleport to="body"><div class="window-controls" role="group" aria-label="窗口控制">
+  <Teleport to="body"><div class="window-controls" :class="{ 'modal-active': modalOpen }" role="group" aria-label="窗口控制">
     <button class="window-button" aria-label="最小化" title="最小化" :disabled="pending" @click="control('minimize')"><Minus :size="16" :stroke-width="1.7" /></button>
     <button class="window-button" :aria-label="maximized ? '还原' : '最大化'" :title="maximized ? '还原' : '最大化'" :disabled="pending" @click="control('maximize')"><Copy v-if="maximized" :size="14" :stroke-width="1.7" /><Square v-else :size="14" :stroke-width="1.7" /></button>
     <button class="window-button window-close" aria-label="关闭窗口" title="关闭窗口" :disabled="pending" @click="control('close')"><X :size="17" :stroke-width="1.7" /></button>

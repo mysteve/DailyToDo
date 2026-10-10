@@ -5,6 +5,7 @@ const dialogStack: HTMLDivElement[] = []
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { X } from '@lucide/vue'
+import { modalOpen } from '../store'
 defineProps<{ title: string; wide?: boolean; image?: boolean; editor?: boolean }>()
 const emit = defineEmits<{ close: [] }>()
 const dialog = ref<HTMLDivElement>()
@@ -14,7 +15,7 @@ function keydown(event: KeyboardEvent) {
   if (dialog.value !== dialogStack.at(-1)) return
   if (event.key === 'Escape') emit('close')
   if (event.key !== 'Tab' || !dialog.value) return
-  const elements = [...dialog.value.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex="0"]')].filter(element => element.offsetParent !== null)
+  const elements = [...dialog.value.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), summary, [tabindex="0"]')].filter(element => element.offsetParent !== null)
   const first = elements[0]
   const last = elements[elements.length - 1]
   if (!first || !last) return
@@ -23,6 +24,7 @@ function keydown(event: KeyboardEvent) {
 }
 onMounted(async () => {
   if (dialog.value) dialogStack.push(dialog.value)
+  modalOpen.value = dialogStack.length > 0
   if (appElement) appElement.inert = true
   document.addEventListener('keydown', keydown)
   await nextTick()
@@ -33,6 +35,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('keydown', keydown)
   const index = dialog.value ? dialogStack.indexOf(dialog.value) : -1
   if (index >= 0) dialogStack.splice(index, 1)
+  modalOpen.value = dialogStack.length > 0
   if (appElement) appElement.inert = dialogStack.length > 0
   previousFocus?.focus()
 })

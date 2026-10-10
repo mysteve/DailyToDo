@@ -27,6 +27,8 @@ export interface Note {
   images?: NoteImage[]
 }
 
+export type Priority = 'high' | 'normal' | 'low'
+
 export interface Goal {
   id: string
   date: string
@@ -34,7 +36,22 @@ export interface Goal {
   completed: boolean
   createdAt: string
   updatedAt: string
+  /** 自由填写的项目名称，留空时回退到标题中的「项目：事项」写法 */
+  project?: string
+  priority?: Priority
+  /** 预估耗时（分钟） */
+  estimateMin?: number
+  /** 实际耗时（分钟） */
+  actualMin?: number
+  /** 勾选完成的时间；旧数据没有该字段 */
+  completedAt?: string
+  /** 首次计划日期，顺延后保留原日期 */
+  originDate?: string
+  carryCount?: number
 }
+
+export const maxMinutes = 100000
+export const priorityNames: Record<Priority, string> = { high: '高', normal: '中', low: '低' }
 
 export interface Statistics {
   days: number
@@ -43,6 +60,8 @@ export interface Statistics {
   completed: number
   blockers: number
   completionRate: number
+  estimateMinutes?: number
+  actualMinutes?: number
 }
 
 export interface ReportRequest {
@@ -54,6 +73,7 @@ export interface ReportRequest {
   mode: GenerationMode
   includeNotes: boolean
   includeGoals: boolean
+  includeCommits?: boolean
   instruction: string
 }
 
@@ -74,13 +94,73 @@ export interface Report {
   statistics: Statistics
   createdAt: string
   model: string
-  sources: { notes: Note[]; goals: Goal[] }
+  sources: { notes: Note[]; goals: Goal[]; commits?: Commit[] }
+}
+
+export interface Commit {
+  date: string
+  repository: string
+  sha: string
+  message: string
+}
+
+export type GitProvider = 'github' | 'gitlab'
+
+export interface GitSettings {
+  enabled: boolean
+  provider: GitProvider
+  gitlabUrl: string
+  hasToken: boolean
+}
+
+export const defaultGitSettings: GitSettings = { enabled: false, provider: 'github', gitlabUrl: 'https://gitlab.com', hasToken: false }
+
+export function gitTokenPage(git: Pick<GitSettings, 'provider' | 'gitlabUrl'>): string {
+  if (git.provider === 'github') return 'https://github.com/settings/tokens/new?scopes=repo&description=riji-worklog'
+  let url: URL
+  try { url = new URL(git.gitlabUrl.trim()) } catch { throw new Error('请输入完整的 GitLab 地址') }
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) throw new Error('GitLab 地址请使用 HTTPS；本地服务可使用 HTTP')
+  if (url.username || url.password || url.search || url.hash) throw new Error('GitLab 地址不能包含凭据、查询参数或片段')
+  return `${url.origin}${url.pathname.replace(/\/+$/, '')}/-/user_settings/personal_access_tokens?name=riji-worklog&scopes=read_api`
 }
 
 export interface AiSettings {
   endpoint: string
   model: string
   hasApiKey: boolean
+  reportTemplates?: ReportTemplates
+  git?: GitSettings
+}
+
+export type ReportTemplates = Record<ReportType, string>
+
+export const templateVariables = ['标题', '日期年-月-日', '日期范围', '汇报摘要', '月度目标达成情况', '重点项目成果与实际影响', '风险与协调事项', '下阶段重点任务与交付', '未完成事项与原因', '项目完成情况', '项目计划', '范围', '概况', '已完成待办', '未完成待办', '每日待办', '耗时统计'] as const
+export const defaultReportTemplates: ReportTemplates = {
+  daily: '# 日报 {{日期年-月-日}}\n\n## 【总体情况】\n{{汇报摘要}}\n\n## 【重点工作与交付】\n{{重点项目成果与实际影响}}\n\n## 【风险与需协调事项】\n{{风险与协调事项}}\n\n## 【明日重点计划】\n{{下阶段重点任务与交付}}',
+  weekly: '# 周报\n\n{{日期范围}}\n\n## 【本周总体情况】\n{{汇报摘要}}\n\n## 【重点项目与节点进展】\n{{重点项目成果与实际影响}}\n\n## 【进度风险与需协调事项】\n{{风险与协调事项}}\n\n## 【下周重点计划】\n{{下阶段重点任务与交付}}',
+  monthly: '# 月报\n\n{{日期范围}}\n\n## 【月度目标达成情况】\n{{月度目标达成情况}}\n\n## 【主要成果与业务价值】\n{{重点项目成果与实际影响}}\n\n## 【未完成事项与原因】\n{{未完成事项与原因}}\n\n## 【风险与需协调事项】\n{{风险与协调事项}}\n\n## 【下月重点计划】\n{{下阶段重点任务与交付}}',
+}
+
+export function resolveReportTemplates(saved?: Partial<ReportTemplates>): ReportTemplates {
+  const templates = { ...defaultReportTemplates, ...saved }
+  for (const [type, period, kind, date, plan] of [
+    ['daily', '今日', '日报', '日期年-月-日', '明日计划'],
+    ['weekly', '本周', '周报', '日期范围', '下周计划'],
+    ['monthly', '本月', '月报', '日期范围', '下月计划'],
+  ] as const) {
+    const previous = `# {{标题}}\n\n{{范围}}\n\n## ${period}概况\n{{概况}}\n\n## ${period}完成\n{{已完成待办}}\n\n## 待继续推进\n{{未完成待办}}`
+    const progress = `${kind}{{${date}}}完成任务进度和计划\n\n【完成情况】：\n{{项目完成情况}}\n\n【遇到问题】\n无\n\n【${plan}】\n{{项目计划}}`
+    if (templates[type] === previous || templates[type] === progress) templates[type] = defaultReportTemplates[type]
+  }
+  return templates
+}
+
+export function validateReportTemplates(templates: ReportTemplates) {
+  for (const type of ['daily', 'weekly', 'monthly'] as const) {
+    const value = templates[type]
+    if (typeof value !== 'string' || !value.trim() || [...value].length > 10000) throw new Error(`${typeNames[type]}模板需填写，且不能超过 10000 字`)
+  }
 }
 
 export interface Workspace {
@@ -156,14 +236,29 @@ export function requestPeriod(request: ReportRequest): DateRange {
 export function selectSources(workspace: Pick<Workspace, 'notes' | 'goals'>, request: ReportRequest) {
   const { start, end } = requestPeriod(request)
   return {
-    notes: request.includeNotes ? workspace.notes.filter(note => note.date >= start && note.date <= end) : [],
-    goals: request.includeGoals ? workspace.goals.filter(goal => goal.date >= start && goal.date <= end) : [],
+    notes: [] as Note[],
+    goals: workspace.goals.filter(goal => goal.date >= start && goal.date <= end),
   }
+}
+
+export function formatMinutes(minutes: number): string {
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  if (!hours) return `${rest} 分钟`
+  return rest ? `${hours} 小时 ${rest} 分钟` : `${hours} 小时`
+}
+
+function timeSummary(goals: Goal[]): string | null {
+  const recorded = goals.filter(goal => goal.actualMin !== undefined)
+  if (!recorded.length) return null
+  return `${recorded.length} 项待办记录了实际耗时，合计 ${formatMinutes(recorded.reduce((sum, goal) => sum + (goal.actualMin || 0), 0))}。`
 }
 
 export function statisticsFor(notes: Note[], goals: Goal[]): Statistics {
   const completed = goals.filter(goal => goal.completed).length
   return {
+    estimateMinutes: goals.reduce((sum, goal) => sum + (goal.estimateMin || 0), 0),
+    actualMinutes: goals.reduce((sum, goal) => sum + (goal.actualMin || 0), 0),
     days: new Set([...notes.map(note => note.date), ...goals.map(goal => goal.date)]).size,
     notes: notes.length,
     goals: goals.length,
@@ -178,32 +273,70 @@ export function noteSummary(note: Note): string {
   return [note.content, images ? `附图 ${images} 张` : ''].filter(Boolean).join(' · ')
 }
 
-export function localReport(workspace: Pick<Workspace, 'notes' | 'goals'>, request: ReportRequest): Report {
+function projectItems(goals: Goal[], detail?: { label: string; confirmation: string }): string {
+  if (!goals.length) return '暂无'
+  const projects = new Map<string, string[]>()
+  for (const goal of goals) {
+    const title = goal.title.trim()
+    const spent = goal.actualMin === undefined ? '' : `（实际耗时 ${formatMinutes(goal.actualMin)}）`
+    const explicit = goal.project?.trim()
+    if (explicit) {
+      const items = projects.get(explicit) || []
+      items.push(title + spent)
+      projects.set(explicit, items)
+      continue
+    }
+    const labelled = title.match(/^(?:【([^】]*)】|\[([^\]]*)\])(.*)$/s)
+    const separated = labelled ? null : title.match(/^([^：:]*)[：:](.*)$/s)
+    const project = (labelled?.[1] ?? labelled?.[2] ?? separated?.[1])?.trim()
+    const content = (labelled?.[3] ?? separated?.[2])?.trim()
+    const grouped = project && content && !project.includes('\n') && !content.includes('\n')
+    const name = grouped ? project : '待办事项'
+    const items = projects.get(name) || []
+    items.push((grouped ? content : title) + spent)
+    projects.set(name, items)
+  }
+  const number = (index: number) => index < 20 ? String.fromCodePoint(0x2460 + index) : `${index + 1}、`
+  return [...projects].map(([project, items], index) => {
+    const lines = items.map((content, item) => `${number(item)}${detail ? `${detail.label}：` : ''}${content}`)
+    if (detail) lines.push(`${number(items.length)}${detail.confirmation}：待确认`)
+    return `${index + 1}、${project}：\n${lines.join('\n')}`
+  }).join('\n')
+}
+
+export function localReport(workspace: Pick<Workspace, 'notes' | 'goals'> & { settings?: AiSettings }, request: ReportRequest): Report {
   const { start, end } = requestPeriod(request)
   const { notes, goals } = selectSources(workspace, request)
-  if (!notes.length && !goals.length) throw new Error('所选范围内没有可用于生成报告的记录')
-  const stats = statisticsFor(notes, goals)
+  if (!goals.length) throw new Error('所选范围内没有可用于生成报告的待办事项')
+  const stats = statisticsFor([], goals)
   const title = `${shortDate(start)}${start !== end ? ` — ${shortDate(end)}` : ''}工作${typeNames[request.type]}`
-  const lines = [`# ${title}`, '', periodLabel(start, end), '', '## 工作概况', '', `记录 ${stats.days} 天，共 ${stats.notes} 条备忘；${stats.goals} 项待办，已完成 ${stats.completed} 项${stats.goals ? `，完成率 ${stats.completionRate}%` : ''}。`, '']
-  const done = goals.filter(goal => goal.completed)
-  const pending = goals.filter(goal => !goal.completed)
-  if (done.length) lines.push('## 已完成待办', '', ...done.map(goal => `- [x] ${goal.title}（${shortDate(goal.date)}）`), '')
-  if (request.style === 'detailed') {
-    const dates = [...new Set([...notes.map(note => note.date), ...goals.map(goal => goal.date)])].sort()
-    lines.push('## 每日工作记录', '')
-    dates.forEach(date => {
-      lines.push(`### ${shortDate(date)}`, '')
-      notes.filter(note => note.date === date).forEach(note => lines.push(`- ${kindNames[note.kind]}${note.tag ? ` · ${note.tag}` : ''}：${noteSummary(note).replace(/\n/g, '\n  ')}`))
-      goals.filter(goal => goal.date === date).forEach(goal => lines.push(`- [${goal.completed ? 'x' : ' '}] ${goal.title}`))
-      lines.push('')
-    })
-  } else {
-    const regular = notes.filter(note => note.kind !== 'blocker')
-    if (regular.length) lines.push(request.style === 'review' ? '## 过程与收获' : '## 工作进展', '', ...regular.map(note => `- ${note.tag ? `【${note.tag}】` : ''}${noteSummary(note).replace(/\n/g, '\n  ')}（${shortDate(note.date)}）`), '')
+  const list = (items: Goal[]) => items.length ? items.map(goal => `- [${goal.completed ? 'x' : ' '}] ${goal.project?.trim() ? `【${goal.project.trim()}】` : ''}${goal.title}（${shortDate(goal.date)}${goal.actualMin === undefined ? '' : `，耗时 ${formatMinutes(goal.actualMin)}`}）`).join('\n') : '暂无'
+  const daily = [...new Set(goals.map(goal => goal.date))].sort().map(date => `### ${shortDate(date)}\n\n${list(goals.filter(goal => goal.date === date))}`).join('\n\n')
+  const completed = goals.filter(goal => goal.completed)
+  const unfinished = goals.filter(goal => !goal.completed)
+  const period = { daily: '今日', weekly: '本周', monthly: '本月' }[request.type]
+  const timeNote = timeSummary(goals)
+  const summary = `${period}共 ${stats.goals} 项待办，已完成 ${stats.completed} 项，待推进 ${unfinished.length} 项。${timeNote ? `\n${timeNote}` : ''}`
+  const values: Record<string, string> = {
+    标题: title, 范围: periodLabel(start, end), 日期: end, 报告日期: end, '日期年-月-日': end,
+    日期范围: start === end ? end : `${start} — ${end}`,
+    汇报摘要: summary,
+    月度目标达成情况: `${summary}\n月度目标、验收标准及达成情况：待确认`,
+    重点项目成果与实际影响: projectItems(completed, { label: '成果或进度', confirmation: '实际影响' }),
+    风险与协调事项: '风险、进度影响及需协调事项：待确认',
+    下阶段重点任务与交付: projectItems(unfinished, { label: '重点任务', confirmation: '预期交付及完成时间' }),
+    未完成事项与原因: unfinished.length ? `待推进事项：\n${projectItems(unfinished)}\n\n未完成原因：待确认` : '所选范围内无未完成待办。',
+    项目完成情况: projectItems(goals.filter(goal => goal.completed)),
+    项目计划: projectItems(goals.filter(goal => !goal.completed)),
+    概况: `${stats.days} 天，共 ${stats.goals} 项待办，已完成 ${stats.completed} 项，完成率 ${stats.completionRate}%。${timeNote ? `\n${timeNote}` : ''}`,
+    耗时统计: timeNote ?? '未记录耗时',
+    已完成待办: list(goals.filter(goal => goal.completed)),
+    未完成待办: list(goals.filter(goal => !goal.completed)), 每日待办: daily,
   }
-  const blockers = notes.filter(note => note.kind === 'blocker')
-  if (blockers.length) lines.push('## 问题与阻碍', '', ...blockers.map(note => `- ${noteSummary(note).replace(/\n/g, '\n  ')}（${shortDate(note.date)}）`), '')
-  if (pending.length) lines.push(request.style === 'review' ? '## 待继续推进' : '## 未完成待办', '', ...pending.map(goal => `- [ ] ${goal.title}（${shortDate(goal.date)}）`), '')
-  if (request.style === 'review') lines.push('## 复盘思考', '', '- 哪些做法值得继续？', '- 哪些问题需要调整？', '- 下一阶段优先推进什么？', '')
-  return { id: crypto.randomUUID(), title, type: request.type, style: request.style, mode: 'local', startDate: start, endDate: end, markdown: lines.join('\n'), statistics: stats, createdAt: new Date().toISOString(), model: '', sources: { notes, goals } }
+  const templates = resolveReportTemplates(workspace.settings?.reportTemplates)
+  validateReportTemplates(templates)
+  let template = templates[request.type]
+  if (request.style === 'detailed' && !template.includes('{{每日待办}}')) template += '\n\n## 每日待办\n{{每日待办}}'
+  const markdown = template.replace(/\{\{([^{}]*)\}\}/g, (_, key: string) => Object.hasOwn(values, key.trim()) ? values[key.trim()]! : `待填写：${key.trim() || '自定义字段'}`)
+  return { id: crypto.randomUUID(), title, type: request.type, style: request.style, mode: 'local', startDate: start, endDate: end, markdown, statistics: stats, createdAt: new Date().toISOString(), model: '', sources: { notes, goals } }
 }
