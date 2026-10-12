@@ -20,6 +20,8 @@ pub struct Note {
     pub updated_at: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<NoteImage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

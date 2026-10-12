@@ -85,6 +85,9 @@ pub fn validate_id(id: &str) -> Result<(), String> {
 
 pub fn validate_note(note: &Note) -> Result<(), String> {
     validate_id(&note.id)?;
+    if let Some(id) = &note.goal_id {
+        validate_id(id)?;
+    }
     validate_date(&note.date)?;
     if note.content.trim().is_empty() && note.images.is_empty() {
         return Err("请填写记录内容或添加图片".into());
@@ -183,6 +186,7 @@ pub fn save_note_with_images(
     let transaction = connection
         .unchecked_transaction()
         .map_err(|e| e.to_string())?;
+    validate_note_link(&transaction, note)?;
     let mut ids = std::collections::HashSet::new();
     for upload in uploads {
         if !ids.insert(&upload.id) {
@@ -200,6 +204,22 @@ pub fn save_note_with_images(
     transaction.execute("INSERT INTO notes(id, date, payload) VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET date = excluded.date, payload = excluded.payload", params![note.id, note.date, payload]).map_err(|e| e.to_string())?;
     images::prune(&transaction)?;
     transaction.commit().map_err(|e| e.to_string())
+}
+
+fn validate_note_link(connection: &Connection, note: &Note) -> Result<(), String> {
+    if let Some(id) = &note.goal_id {
+        let exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM goals WHERE id = ?1)",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if !exists {
+            return Err("关联待办已不存在，请重新选择".into());
+        }
+    }
+    Ok(())
 }
 
 pub fn save_goal(connection: &Connection, goal: &Goal) -> Result<(), String> {
@@ -318,6 +338,21 @@ pub fn delete(connection: &Connection, entity: &str, id: &str) -> Result<(), Str
         .execute(sql, params![id])
         .map_err(|e| e.to_string())?;
     if entity == "goals" {
+        let notes: Vec<Note> = read_list(&transaction, "SELECT payload FROM notes")?;
+        for mut note in notes {
+            if note.goal_id.as_deref() == Some(id) {
+                note.goal_id = None;
+                transaction
+                    .execute(
+                        "UPDATE notes SET payload = ?2 WHERE id = ?1",
+                        params![
+                            note.id,
+                            serde_json::to_string(&note).map_err(|e| e.to_string())?
+                        ],
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+        }
         let rows: Vec<PlanWeek> = read_list(&transaction, "SELECT payload FROM plan_weeks")?;
         for mut row in rows {
             if row.goal_ids.iter().any(|g| g == id) {
@@ -443,6 +478,10 @@ pub fn import(connection: &mut Connection, backup: &Backup) -> Result<(), String
             )
             .map_err(|e| e.to_string())?;
     }
+    let imported_notes: Vec<Note> = read_list(&transaction, "SELECT payload FROM notes")?;
+    for note in &imported_notes {
+        validate_note_link(&transaction, note)?;
+    }
     for plan in &backup.plans {
         transaction
             .execute(
@@ -514,6 +553,7 @@ mod tests {
             created_at: "2026-10-09T09:00:00+08:00".into(),
             updated_at: "2026-10-09T09:00:00+08:00".into(),
             images: vec![],
+            goal_id: None,
         }
     }
     #[test]
@@ -542,6 +582,87 @@ mod tests {
         let workspace = load(&connection, String::new()).unwrap();
         assert_eq!(workspace.notes.len(), 1);
         assert_eq!(workspace.notes[0].content, "已修改");
+    }
+
+    #[test]
+    fn note_link_survives_goal_changes_and_delete_preserves_note() {
+        let connection = open(Path::new(":memory:")).unwrap();
+        let mut task = goal();
+        save_goal(&connection, &task).unwrap();
+        let mut log = note();
+        log.goal_id = Some(task.id.clone());
+        log.date = "2026-10-08".into();
+        save_note(&connection, &log).unwrap();
+        task.title = "改名后的待办".into();
+        task.date = "2026-10-10".into();
+        save_goal(&connection, &task).unwrap();
+        let stored = load(&connection, String::new()).unwrap();
+        assert_eq!(stored.notes[0].goal_id.as_deref(), Some(task.id.as_str()));
+        assert_eq!(stored.notes[0].date, "2026-10-08");
+        delete(&connection, "goals", &task.id).unwrap();
+        let stored = load(&connection, String::new()).unwrap();
+        assert!(stored.goals.is_empty());
+        assert_eq!(stored.notes.len(), 1);
+        assert!(stored.notes[0].goal_id.is_none());
+        assert_eq!(stored.notes[0].content, log.content);
+        assert_eq!(stored.notes[0].updated_at, log.updated_at);
+    }
+
+    #[test]
+    fn invalid_note_link_is_rejected_and_unlink_is_saved() {
+        let connection = open(Path::new(":memory:")).unwrap();
+        let mut log = note();
+        log.goal_id = Some("invalid-id".into());
+        assert!(validate_note(&log).is_err());
+        let task = goal();
+        log.goal_id = Some(task.id.clone());
+        assert!(save_note(&connection, &log)
+            .unwrap_err()
+            .contains("关联待办已不存在"));
+        assert!(load(&connection, String::new()).unwrap().notes.is_empty());
+        save_goal(&connection, &task).unwrap();
+        save_note(&connection, &log).unwrap();
+        log.goal_id = None;
+        save_note(&connection, &log).unwrap();
+        let stored = load(&connection, String::new()).unwrap();
+        assert_eq!(stored.notes.len(), 1);
+        assert!(stored.notes[0].goal_id.is_none());
+    }
+
+    #[test]
+    fn backup_restores_note_links_and_dangling_link_rolls_back() {
+        let mut connection = open(Path::new(":memory:")).unwrap();
+        let task = goal();
+        let mut log = note();
+        log.goal_id = Some(task.id.clone());
+        let mut backup = Backup {
+            version: 3,
+            plans: vec![],
+            plan_weeks: vec![],
+            notes: vec![log],
+            goals: vec![task.clone()],
+            reports: vec![],
+            images: vec![],
+            report_templates: None,
+        };
+        let encoded = serde_json::to_string(&backup).unwrap();
+        let decoded: Backup = serde_json::from_str(&encoded).unwrap();
+        import(&mut connection, &decoded).unwrap();
+        assert_eq!(
+            load(&connection, String::new()).unwrap().notes[0]
+                .goal_id
+                .as_deref(),
+            Some(task.id.as_str())
+        );
+        let mut invalid = note();
+        invalid.goal_id = Some(uuid::Uuid::new_v4().to_string());
+        backup.notes = vec![invalid];
+        let extra = goal();
+        backup.goals = vec![extra];
+        assert!(import(&mut connection, &backup).is_err());
+        let stored = load(&connection, String::new()).unwrap();
+        assert_eq!(stored.notes.len(), 1);
+        assert_eq!(stored.goals.len(), 1);
     }
     #[test]
     fn invalid_backup_does_not_partially_import() {

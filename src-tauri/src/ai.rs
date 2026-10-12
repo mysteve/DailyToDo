@@ -432,6 +432,7 @@ mod tests {
             id: "note-id".into(),
             date: "2026-10-09".into(),
             content: "工作记录私有内容".into(),
+            goal_id: None,
             kind: NoteKind::Blocker,
             tag: String::new(),
             images: vec![],

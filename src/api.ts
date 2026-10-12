@@ -52,6 +52,10 @@ export function validateGoal(goal: Goal) {
   if (goal.adHoc !== undefined && typeof goal.adHoc !== 'boolean') throw new Error('插活标记不正确')
 }
 
+export function validateNoteLink(note: Note, goals: Goal[]) {
+  if (note.goalId !== undefined && (typeof note.goalId !== 'string' || !goals.some(goal => goal.id === note.goalId))) throw new Error('关联待办已不存在，请重新选择')
+}
+
 function download(filename: string, content: string, mime: string) {
   const url = URL.createObjectURL(new Blob([content], { type: mime }))
   const link = document.createElement('a')
@@ -96,6 +100,7 @@ export const api = {
   async saveNote(note: Note, images: ImageUpload[] = []): Promise<void> {
     if (desktop) return invoke('save_note', { note, images })
     const workspace = readPreview()
+    validateNoteLink(note, workspace.goals)
     const assets = images.map(upload => {
       const image = note.images?.find(image => image.id === upload.id)
       if (!image) throw new Error('上传图片未关联记录')
@@ -152,6 +157,7 @@ export const api = {
     if (desktop) return invoke('delete_goal', { id })
     const workspace = readPreview()
     workspace.goals = workspace.goals.filter(goal => goal.id !== id)
+    workspace.notes.forEach(note => { if (note.goalId === id) delete note.goalId })
     workspace.planWeeks?.forEach(row => { row.goalIds = row.goalIds.filter(goalId => goalId !== id) })
     writePreview(workspace)
   },
@@ -237,6 +243,8 @@ export const api = {
           const mergedGoals = merge(workspace.goals, goals)
           const existingWeeks = new Set((workspace.planWeeks || []).map(planWeekId))
           const incomingWeeks = planWeeks.filter(row => !existingWeeks.has(planWeekId(row)))
+          const existingNotes = new Set(workspace.notes.map(note => note.id))
+          notes.filter(note => !existingNotes.has(note.id)).forEach(note => validateNoteLink(note, mergedGoals))
           if (incomingWeeks.some(row => !mergedPlans.some(plan => plan.id === row.planId) || row.goalIds.some(id => !mergedGoals.some(goal => goal.id === id)))) throw new Error('周计划关联数据不完整')
           if (backup.reportTemplates) validateReportTemplates(backup.reportTemplates)
           const validNote = (note: Note) => note.id && typeof note.content === 'string' && (note.content.trim() || note.images?.length) && (!note.images || (Array.isArray(note.images) && note.images.length <= 9)) && /^\d{4}-\d{2}-\d{2}$/.test(note.date) && ['note', 'progress', 'blocker'].includes(note.kind)

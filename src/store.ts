@@ -41,6 +41,6 @@ export async function mutate(action: () => Promise<unknown>, message = ''): Prom
   finally { busy.value = false }
 }
 
-export const dateNotes = computed(() => workspace.value.notes.filter(note => note.date === selectedDate.value).sort((a, b) => b.createdAt.localeCompare(a.createdAt)))
+export const dateNotes = computed(() => workspace.value.notes.filter(note => note.date === selectedDate.value).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)))
 export const dateGoals = computed(() => workspace.value.goals.filter(goal => goal.date === selectedDate.value).sort((a, b) => a.createdAt.localeCompare(b.createdAt)))
 export const dateStatistics = computed(() => statisticsFor(dateNotes.value, dateGoals.value))

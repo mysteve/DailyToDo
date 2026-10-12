@@ -26,6 +26,7 @@ export interface Note {
   createdAt: string
   updatedAt: string
   images?: NoteImage[]
+  goalId?: string
 }
 
 export type Priority = 'high' | 'normal' | 'low'
