@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { AlarmClock, ArrowUpRight, CalendarDays, ChevronLeft, ChevronRight, CircleCheck, Clock, Download, Flame, Sparkles } from '@lucide/vue'
+import { AlarmClock, ArrowUpRight, CalendarDays, ChevronLeft, ChevronRight, CircleCheck, Clock, Download, Flame } from '@lucide/vue'
 import { api } from '../api'
 import { backlog, delta, goalsCsv, heatmap, inRange, insightNames, projectShares, rangeFor, shiftRange, streak, summarize, trend, type InsightKind } from '../analytics'
 import { dateKey, formatMinutes, kindNames, parseDate, shortDate } from '../domain'
 import { notify, selectedDate, view, workspace } from '../store'
-const emit = defineEmits<{ generate: [type: 'weekly' | 'monthly', anchorDate: string] }>()
 const kind = ref<InsightKind>('month')
 const anchor = ref(selectedDate.value)
 const today = dateKey(new Date())
@@ -22,10 +21,8 @@ const label = computed(() => {
   return `${shortDate(start, start.slice(0, 4) !== end.slice(0, 4))} — ${shortDate(end, start.slice(0, 4) !== end.slice(0, 4))}`
 })
 const unit = computed(() => insightNames[kind.value])
-const completedDelta = computed(() => delta(summary.value.completed, previous.value.completed, ' 项'))
 const timeDelta = computed(() => delta(summary.value.actualMin, previous.value.actualMin, ' 分钟'))
 // 持平或没有数据时不显示说明行，避免出现无信息的占位文案
-const completedFoot = computed(() => [summary.value.total ? `${summary.value.rate}% 完成率` : '', completedDelta.value.direction === 'flat' ? '' : completedDelta.value.text].filter(Boolean).join(' · '))
 const timeFoot = computed(() => timeDelta.value.direction === 'flat' ? '' : timeDelta.value.text)
 const buckets = computed(() => trend(goals.value, range.value, kind.value))
 const maxBucket = computed(() => Math.max(2, ...buckets.value.flatMap(item => [item.planned, item.completed])))
@@ -64,7 +61,6 @@ async function exportCsv() {
     if (await api.exportCsv(`日迹-待办-${range.value.start}_${range.value.end}.csv`, goalsCsv(goals.value))) notify('待办明细已导出')
   } catch (error) { notify(error instanceof Error ? error.message : String(error)) }
 }
-function generate() { if (kind.value !== 'year') emit('generate', kind.value === 'week' ? 'weekly' : 'monthly', range.value.start) }
 </script>
 
 <template>
@@ -78,7 +74,7 @@ function generate() { if (kind.value !== 'year') emit('generate', kind.value ===
   <div class="insights-scroll">
   <div class="insight-metrics five">
     <div class="metric-card"><CalendarDays :size="20" /><span>记录天数</span><strong>{{ summary.recordedDays }}<small>天</small></strong></div>
-    <div class="metric-card"><CircleCheck :size="20" /><span>待办完成</span><strong>{{ summary.completed }}<small>/ {{ summary.total }}</small></strong><span v-if="completedFoot" class="metric-foot">{{ completedFoot }}</span></div>
+    <div class="metric-card"><CircleCheck :size="20" /><span>待办完成</span><strong>{{ summary.completed }}<small>/ {{ summary.total }}</small></strong></div>
     <div class="metric-card"><Clock :size="20" /><span>实际耗时</span><strong class="time-value">{{ summary.actualMin ? formatMinutes(summary.actualMin) : '未记录' }}</strong><span v-if="timeFoot" class="metric-foot">{{ timeFoot }}</span></div>
     <div class="metric-card"><AlarmClock :size="20" /><span>预估准确度</span><strong class="time-value">{{ summary.accuracy ? `${Math.round(summary.accuracy.ratio * 100)}%` : '—' }}</strong><span v-if="accuracyText" class="metric-foot">{{ accuracyText }}</span></div>
     <div class="metric-card"><Flame :size="20" /><span>连续记录</span><strong>{{ currentStreak }}<small>天</small></strong></div>
@@ -105,7 +101,6 @@ function generate() { if (kind.value !== 'year') emit('generate', kind.value ===
   <div class="insight-lower">
     <section class="panel"><div class="section-heading"><h2>手记标签</h2></div><div v-if="tags.length" class="tag-chart"><div v-for="[tag, count] in tags.slice(0, 8)" :key="tag"><span>{{ tag }}</span><div class="tag-track"><i :style="{ width: `${count / maxTags * 100}%` }" /></div><strong>{{ count }}</strong></div><p v-if="tags.length > 8" class="subtle">另有 {{ tags.length - 8 }} 个标签</p></div><p v-else class="empty-chart">暂无手记</p></section>
     <section class="panel note-distribution"><div class="section-heading"><h2>手记分类</h2></div><div v-for="noteKind in (['progress', 'note', 'blocker'] as const)" :key="noteKind" class="kind-summary"><i :class="noteKind" /><span>{{ kindNames[noteKind] }}</span><strong>{{ notes.filter(note => note.kind === noteKind).length }}</strong><span class="subtle">条</span></div>
-      <button v-if="kind !== 'year'" class="insight-report-link" @click="generate"><Sparkles :size="16" />生成这{{ kind === 'week' ? '周' : '个月' }}的报告<ArrowUpRight :size="17" /></button>
       <button class="insight-report-link" :disabled="!goals.length" @click="exportCsv"><Download :size="16" />导出待办明细 CSV<ArrowUpRight :size="17" /></button>
     </section>
   </div>

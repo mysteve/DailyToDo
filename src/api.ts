@@ -1,3 +1,4 @@
+import { carryPlans, validatePlan, validatePlanWeek, planWeekId, type Plan, type PlanWeek } from './plans'
 import { invoke, isTauri } from '@tauri-apps/api/core'
 import { dateKey, maxMinutes, defaultReportTemplates, resolveReportTemplates, validateReportTemplates, localReport, defaultGitSettings, gitTokenPage, type AiSettings, type GitSettings, type Goal, type ImageUpload, type Note, type NoteImage, type Report, type ReportRequest, type Workspace } from './domain'
 import { maxImageBytes, prunePreviewImages, readPreviewImage, writePreviewImages, type StoredImage } from './images'
@@ -6,7 +7,7 @@ export const desktop = isTauri()
 const storageKey = 'riji-preview-v1'
 
 function blankWorkspace(): Workspace {
-  return { notes: [], goals: [], reports: [], settings: { endpoint: 'https://api.openai.com/v1', model: '', hasApiKey: false, reportTemplates: { ...defaultReportTemplates } }, storagePath: '当前浏览器 · 预览数据' }
+  return { plans: [], planWeeks: [], notes: [], goals: [], reports: [], settings: { endpoint: 'https://api.openai.com/v1', model: '', hasApiKey: false, thinking: false, reportTemplates: { ...defaultReportTemplates } }, storagePath: '当前浏览器 · 预览数据' }
 }
 
 function readPreview(): Workspace {
@@ -15,7 +16,7 @@ function readPreview(): Workspace {
   try {
     const value = JSON.parse(raw) as Workspace
     if (!Array.isArray(value.notes) || !Array.isArray(value.goals) || !Array.isArray(value.reports) || !value.settings) throw new Error('invalid')
-    return { ...value, settings: { ...value.settings, reportTemplates: resolveReportTemplates(value.settings.reportTemplates) }, storagePath: '当前浏览器 · 预览数据' }
+    return { ...value, plans: value.plans || [], planWeeks: value.planWeeks || [], settings: { ...value.settings, thinking: value.settings.thinking === true, reportTemplates: resolveReportTemplates(value.settings.reportTemplates) }, storagePath: '当前浏览器 · 预览数据' }
   } catch {
     throw new Error('预览数据无法读取。请先导出浏览器存储中的原始数据，再清理该站点数据。')
   }
@@ -62,7 +63,35 @@ function download(filename: string, content: string, mime: string) {
 
 export const api = {
   async load(): Promise<Workspace> {
-    return desktop ? invoke('load_workspace') : readPreview()
+    if (desktop) return invoke('load_workspace')
+    const value = readPreview()
+    value.planWeeks = carryPlans(value)
+    writePreview(value)
+    return value
+  },
+  async savePlan(plan: Plan, row: PlanWeek): Promise<void> {
+    validatePlan(plan); validatePlanWeek(row)
+    if (plan.id !== row.planId) throw new Error('计划标识不一致')
+    if (desktop) return invoke('save_plan', { plan, row })
+    const workspace = readPreview()
+    if (row.goalIds.some(id => !workspace.goals.some(goal => goal.id === id))) throw new Error('关联待办已不存在，请重新选择')
+    workspace.plans = [...(workspace.plans || []).filter(p => p.id !== plan.id), plan]
+    workspace.planWeeks = [...(workspace.planWeeks || []).filter(r => planWeekId(r) !== planWeekId(row)), row]
+    writePreview(workspace)
+  },
+  async archivePlan(id: string, archived: boolean): Promise<void> {
+    if (desktop) return invoke('archive_plan', { id, archived })
+    const workspace = readPreview()
+    const plan = workspace.plans?.find(p => p.id === id)
+    if (!plan) throw new Error('计划不存在')
+    plan.archived = archived
+    writePreview(workspace)
+  },
+  async carryPlans(through: string): Promise<void> {
+    if (desktop) return invoke('carry_plans', { through })
+    const workspace = readPreview()
+    workspace.planWeeks = carryPlans(workspace, through)
+    writePreview(workspace)
   },
   async saveNote(note: Note, images: ImageUpload[] = []): Promise<void> {
     if (desktop) return invoke('save_note', { note, images })
@@ -123,12 +152,14 @@ export const api = {
     if (desktop) return invoke('delete_goal', { id })
     const workspace = readPreview()
     workspace.goals = workspace.goals.filter(goal => goal.id !== id)
+    workspace.planWeeks?.forEach(row => { row.goalIds = row.goalIds.filter(goalId => goalId !== id) })
     writePreview(workspace)
   },
   async generate(request: ReportRequest): Promise<Report> {
     if (desktop) return invoke('generate_report', { request })
     if (request.mode === 'ai') throw new Error('请在桌面应用中配置并使用 AI 服务')
     const workspace = readPreview()
+    workspace.planWeeks = carryPlans(workspace)
     const report = localReport(workspace, request)
     workspace.reports.unshift(report)
     writePreview(workspace)
@@ -173,7 +204,7 @@ export const api = {
     if (desktop) return invoke('export_backup')
     const workspace = readPreview()
     const images = await Promise.all([...imageReferences(workspace).keys()].map(readPreviewImage))
-    download(`日迹备份-${dateKey(new Date())}.json`, JSON.stringify({ version: 2, notes: workspace.notes, goals: workspace.goals, reports: workspace.reports, images, reportTemplates: workspace.settings.reportTemplates }, null, 2), 'application/json')
+    download(`日迹备份-${dateKey(new Date())}.json`, JSON.stringify({ version: 3, plans: workspace.plans, planWeeks: workspace.planWeeks, notes: workspace.notes, goals: workspace.goals, reports: workspace.reports, images, reportTemplates: workspace.settings.reportTemplates }, null, 2), 'application/json')
     return true
   },
   async importBackup(): Promise<boolean> {
@@ -189,7 +220,7 @@ export const api = {
           if (!file) return resolve(false)
           if (file.size > 256 * 1024 * 1024) throw new Error('备份文件不能超过 256 MB')
           const backup = JSON.parse(await file.text())
-          if (![1, 2].includes(backup.version) || !Array.isArray(backup.notes) || !Array.isArray(backup.goals) || !Array.isArray(backup.reports)) throw new Error('备份格式不正确')
+          if (![1, 2, 3].includes(backup.version) || !Array.isArray(backup.notes) || !Array.isArray(backup.goals) || !Array.isArray(backup.reports)) throw new Error('备份格式不正确')
           const workspace = readPreview()
           const merge = <T extends { id: string }>(existing: T[], incoming: T[]): T[] => {
             const ids = new Set(existing.map(item => item.id))
@@ -198,6 +229,15 @@ export const api = {
           const notes = backup.notes as Note[]
           const goals = backup.goals as Goal[]
           const reports = backup.reports as Report[]
+          const plans: Plan[] = backup.plans || []
+          const planWeeks: PlanWeek[] = backup.planWeeks || []
+          if (!Array.isArray(plans) || !Array.isArray(planWeeks)) throw new Error('周计划备份格式不正确')
+          plans.forEach(validatePlan); planWeeks.forEach(validatePlanWeek)
+          const mergedPlans = merge(workspace.plans || [], plans)
+          const mergedGoals = merge(workspace.goals, goals)
+          const existingWeeks = new Set((workspace.planWeeks || []).map(planWeekId))
+          const incomingWeeks = planWeeks.filter(row => !existingWeeks.has(planWeekId(row)))
+          if (incomingWeeks.some(row => !mergedPlans.some(plan => plan.id === row.planId) || row.goalIds.some(id => !mergedGoals.some(goal => goal.id === id)))) throw new Error('周计划关联数据不完整')
           if (backup.reportTemplates) validateReportTemplates(backup.reportTemplates)
           const validNote = (note: Note) => note.id && typeof note.content === 'string' && (note.content.trim() || note.images?.length) && (!note.images || (Array.isArray(note.images) && note.images.length <= 9)) && /^\d{4}-\d{2}-\d{2}$/.test(note.date) && ['note', 'progress', 'blocker'].includes(note.kind)
           if (notes.some(note => !validNote(note)) || goals.some(goal => { try { validateGoal(goal); return false } catch { return true } }) || reports.some(report => !report.id || typeof report.markdown !== 'string' || !report.statistics || report.sources?.notes?.some(note => !validNote(note)))) throw new Error('备份内容不完整')
@@ -209,6 +249,8 @@ export const api = {
             const asset = await readPreviewImage(image.id)
             if ((['id', 'name', 'mime', 'width', 'height'] as const).some(key => asset.image[key] !== image[key])) throw new Error('备份图片信息不一致')
           }
+          workspace.plans = mergedPlans
+          workspace.planWeeks = [...(workspace.planWeeks || []), ...incomingWeeks]
           workspace.notes = merge(workspace.notes, notes)
           workspace.goals = merge(workspace.goals, goals)
           workspace.reports = merge(workspace.reports, reports)

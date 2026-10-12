@@ -9,6 +9,7 @@ import { defaultGitSettings, defaultReportTemplates, templateVariables, typeName
 const emit = defineEmits<{ close: [] }>()
 const endpoint = ref(workspace.value.settings.endpoint)
 const model = ref(workspace.value.settings.model)
+const thinking = ref(workspace.value.settings.thinking === true)
 const templateType = ref<ReportType>('daily')
 const reportTemplates = ref<ReportTemplates>({ ...defaultReportTemplates, ...workspace.value.settings.reportTemplates })
 const templateEditor = ref<HTMLTextAreaElement>()
@@ -102,7 +103,7 @@ async function save(close = true) {
   error.value = ''
   if (!/^https?:\/\//.test(endpoint.value.trim())) { error.value = '请输入完整接口地址'; return false }
   try { validateReportTemplates(reportTemplates.value) } catch (err) { error.value = err instanceof Error ? err.message : String(err); return false }
-  const success = await mutate(() => api.saveSettings({ endpoint: endpoint.value.trim(), model: model.value.trim(), hasApiKey: workspace.value.settings.hasApiKey, reportTemplates: { ...reportTemplates.value }, git: gitSettings() }, apiKey.value, clearKey.value, gitToken.value, clearGitToken.value))
+  const success = await mutate(() => api.saveSettings({ endpoint: endpoint.value.trim(), model: model.value.trim(), hasApiKey: workspace.value.settings.hasApiKey, thinking: thinking.value, reportTemplates: { ...reportTemplates.value }, git: gitSettings() }, apiKey.value, clearKey.value, gitToken.value, clearGitToken.value))
   if (success) { apiKey.value = ''; clearKey.value = false; gitToken.value = ''; clearGitToken.value = false; if (close) { notify('设置已保存'); emit('close') } }
   return success
 }
@@ -137,7 +138,7 @@ async function backup(importing: boolean) {
       <div class="segmented template-tabs"><button v-for="type in (['daily', 'weekly', 'monthly'] as const)" :key="type" type="button" :class="{ active: templateType === type }" :aria-pressed="templateType === type" @click="templateType = type">{{ typeNames[type] }}</button></div>
       <label class="field-label" for="report-template">{{ typeNames[templateType] }}模板 <button type="button" class="text-button" @click="reportTemplates[templateType] = defaultReportTemplates[templateType]">恢复默认</button></label>
       <textarea id="report-template" ref="templateEditor" v-model="reportTemplates[templateType]" rows="10" maxlength="10000" autocomplete="off" required />
-      <p class="field-help">仅使用所选日期内的待办事项生成报告。</p>
+      <p class="field-help">周报可包含周计划及上周对照；日报、月报使用待办事项。</p>
       <details class="template-help"><summary>插入模板变量</summary><div class="template-variables"><button v-for="variable in templateVariables" :key="variable" type="button" class="button secondary compact" @click="insertVariable(variable)">{{ variable }}</button></div><p class="field-help">支持自定义占位符。AI 根据待办填写，缺少依据时标记待确认；本地整理将自定义字段标记为待填写。</p></details>
       <div class="settings-divider" />
       <details class="settings-details"><summary>AI 服务</summary>
@@ -157,6 +158,8 @@ async function backup(importing: boolean) {
       <p class="field-help">{{ desktop ? '密钥保存在系统凭据库。修改接口地址时，请重新填写密钥。' : '浏览器仅供界面预览，AI 服务请在桌面应用中配置。' }}</p>
       <label v-if="workspace.settings.hasApiKey" class="checkbox-label"><input v-model="clearKey" type="checkbox" :disabled="modelsRefreshing || testing" />清除已保存的密钥</label>
       <div class="connection-row"><button type="button" class="button secondary compact" :disabled="!desktop || testing || modelsRefreshing || busy" @click="test"><LoaderCircle v-if="testing" class="spin" :size="14" /><Monitor v-else :size="14" />{{ testing ? '测试中…' : '保存并测试连接' }}</button><span v-if="testResult" class="connection-success"><CheckCircle2 :size="14" />{{ testResult }}</span></div>
+      <label class="checkbox-label"><input v-model="thinking" type="checkbox" :disabled="testing || modelsRefreshing" />使用思考模式（默认关闭）</label>
+      <p class="field-help">仅 DeepSeek 接口支持该参数。关闭后模型直接输出报告，速度更快，也不会因思维链占用输出长度而提示超出限制。</p>
       </details>
       <div class="settings-divider" />
       <details class="settings-details"><summary>代码提交</summary>

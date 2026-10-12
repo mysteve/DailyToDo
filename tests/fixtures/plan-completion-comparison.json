@@ -1,0 +1,117 @@
+[
+  {
+    "name": "increase",
+    "previous": {
+      "status": "active",
+      "completionPercent": 30
+    },
+    "current": {
+      "status": "active",
+      "completionPercent": 65
+    },
+    "expected": "30% → 65%（+35 个百分点）"
+  },
+  {
+    "name": "complete",
+    "previous": {
+      "status": "active",
+      "completionPercent": 65
+    },
+    "current": {
+      "status": "completed",
+      "completionPercent": 100
+    },
+    "expected": "65% → 100%（+35 个百分点）"
+  },
+  {
+    "name": "decrease",
+    "previous": {
+      "status": "active",
+      "completionPercent": 65
+    },
+    "current": {
+      "status": "active",
+      "completionPercent": 40
+    },
+    "expected": "65% → 40%（-25 个百分点）"
+  },
+  {
+    "name": "unchanged",
+    "previous": {
+      "status": "active",
+      "completionPercent": 65
+    },
+    "current": {
+      "status": "active",
+      "completionPercent": 65
+    },
+    "expected": "65% → 65%（持平）"
+  },
+  {
+    "name": "carry",
+    "previous": {
+      "status": "active",
+      "completionPercent": 65
+    },
+    "current": {
+      "status": "active",
+      "completionPercent": 65,
+      "carried": true
+    },
+    "expected": "65% → 65%（持平；自动延续）"
+  },
+  {
+    "name": "new",
+    "previous": null,
+    "current": {
+      "status": "active",
+      "completionPercent": 40
+    },
+    "expected": "本周新增 → 40%"
+  },
+  {
+    "name": "unknown_previous",
+    "previous": {
+      "status": "active"
+    },
+    "current": {
+      "status": "active",
+      "completionPercent": 65
+    },
+    "expected": "未记录 → 65%"
+  },
+  {
+    "name": "unknown_current",
+    "previous": {
+      "status": "active",
+      "completionPercent": 65
+    },
+    "current": {
+      "status": "blocked"
+    },
+    "expected": "65% → 未记录"
+  },
+  {
+    "name": "legacy_completed",
+    "previous": {
+      "status": "active",
+      "completionPercent": 65
+    },
+    "current": {
+      "status": "completed"
+    },
+    "expected": "65% → 100%（+35 个百分点）"
+  },
+  {
+    "name": "zero",
+    "previous": {
+      "status": "pending",
+      "completionPercent": 0
+    },
+    "current": {
+      "status": "active",
+      "completionPercent": 10
+    },
+    "expected": "0% → 10%（+10 个百分点）"
+  }
+]

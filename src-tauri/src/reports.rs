@@ -136,6 +136,14 @@ pub fn make_report(
     _notes: Vec<Note>,
     goals: Vec<Goal>,
 ) -> Result<Report, String> {
+    make_report_with_plans(request, goals, vec![])
+}
+
+pub fn make_report_with_plans(
+    request: &ReportRequest,
+    goals: Vec<Goal>,
+    comparisons: Vec<PlanComparison>,
+) -> Result<Report, String> {
     if request.instruction.chars().count() > 2000 {
         return Err("补充要求不能超过 2000 字".into());
     }
@@ -144,7 +152,7 @@ pub fn make_report(
         .into_iter()
         .filter(|goal| goal.date >= start_date && goal.date <= end_date)
         .collect();
-    if goals.is_empty() {
+    if goals.is_empty() && comparisons.is_empty() {
         return Err("所选范围内没有可用于生成报告的待办事项".into());
     }
     let title = if start_date == end_date {
@@ -171,6 +179,7 @@ pub fn make_report(
         created_at: Utc::now().to_rfc3339(),
         model: String::new(),
         sources: Sources {
+            plan_comparisons: comparisons,
             notes: vec![],
             goals,
             commits: vec![],
@@ -308,7 +317,7 @@ pub fn render_template(report: &Report, templates: &ReportTemplates) -> Result<S
         ReportType::Monthly => "本月",
     };
     let time_note = time_summary(goals);
-    let summary = format!(
+    let mut summary = format!(
         "{period}共 {} 项待办，已完成 {} 项，待推进 {} 项。{}",
         stats.goals,
         stats.completed,
@@ -318,7 +327,26 @@ pub fn render_template(report: &Report, templates: &ReportTemplates) -> Result<S
             .map(|note| format!("\n{note}"))
             .unwrap_or_default()
     );
-    let values = [
+    let comparisons = &report.sources.plan_comparisons;
+    if !comparisons.is_empty() {
+        summary = format!(
+            "周计划 {} 项，已完成 {} 项，阻塞 {} 项。\n{summary}",
+            comparisons.len(),
+            comparisons
+                .iter()
+                .filter(|r| r.current.status == PlanStatus::Completed)
+                .count(),
+            comparisons
+                .iter()
+                .filter(|r| r.current.status == PlanStatus::Blocked)
+                .count()
+        );
+    }
+    let mut values = [
+        (
+            "周计划进展对照",
+            crate::plans::table(&report.sources.plan_comparisons),
+        ),
         ("标题", report.title.clone()),
         ("日期", report.end_date.clone()),
         ("报告日期", report.end_date.clone()),
@@ -416,9 +444,29 @@ pub fn render_template(report: &Report, templates: &ReportTemplates) -> Result<S
         ),
         ("每日待办", daily),
     ];
+    let blocked: Vec<_> = comparisons
+        .iter()
+        .filter(|r| r.current.status == PlanStatus::Blocked)
+        .map(|r| format!("{}：{}", r.current.title, r.current.blocker))
+        .collect();
+    if !blocked.is_empty() {
+        if let Some((_, value)) = values.iter_mut().find(|(key, _)| *key == "风险与协调事项")
+        {
+            *value = blocked.join("\n");
+            if let Some(reasons) =
+                recorded_reasons(&goals.iter().filter(|g| !g.completed).collect::<Vec<_>>())
+            {
+                value.push_str(&format!("\n{reasons}"));
+            }
+        }
+    }
     let mut template = templates.get(&report.r#type).to_string();
     if report.style == ReportStyle::Detailed && !template.contains("{{每日待办}}") {
         template.push_str("\n\n## 每日待办\n{{每日待办}}");
+    }
+    if !report.sources.plan_comparisons.is_empty() && !template.contains("{{周计划进展对照}}")
+    {
+        template.push_str("\n\n## 周计划进展对照\n{{周计划进展对照}}");
     }
     // Substitute only template tokens; task text is never interpreted as another token.
     let mut output = String::new();

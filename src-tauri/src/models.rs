@@ -173,6 +173,8 @@ pub struct Statistics {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Sources {
+    #[serde(default, rename = "planComparisons")]
+    pub plan_comparisons: Vec<PlanComparison>,
     pub notes: Vec<Note>,
     pub goals: Vec<Goal>,
     #[serde(default)]
@@ -241,6 +243,8 @@ pub struct AiSettings {
     #[serde(default)]
     pub has_api_key: bool,
     #[serde(default)]
+    pub thinking: bool,
+    #[serde(default)]
     pub report_templates: ReportTemplates,
     #[serde(default)]
     pub git: GitSettings,
@@ -252,6 +256,7 @@ impl Default for AiSettings {
             endpoint: "https://api.openai.com/v1".into(),
             model: String::new(),
             has_api_key: false,
+            thinking: false,
             report_templates: ReportTemplates::default(),
             git: GitSettings::default(),
         }
@@ -270,7 +275,7 @@ impl Default for ReportTemplates {
     fn default() -> Self {
         Self {
             daily: "# 日报 {{日期年-月-日}}\n\n## 【总体情况】\n{{汇报摘要}}\n\n## 【重点工作与交付】\n{{重点项目成果与实际影响}}\n\n## 【风险与需协调事项】\n{{风险与协调事项}}\n\n## 【明日重点计划】\n{{下阶段重点任务与交付}}".into(),
-            weekly: "# 周报\n\n{{日期范围}}\n\n## 【本周总体情况】\n{{汇报摘要}}\n\n## 【重点项目与节点进展】\n{{重点项目成果与实际影响}}\n\n## 【进度风险与需协调事项】\n{{风险与协调事项}}\n\n## 【下周重点计划】\n{{下阶段重点任务与交付}}".into(),
+            weekly: "# 周报\n\n{{日期范围}}\n\n## 【本周总体情况】\n{{汇报摘要}}\n\n## 周计划进展对照\n{{周计划进展对照}}\n\n## 【重点项目与节点进展】\n{{重点项目成果与实际影响}}\n\n## 【进度风险与需协调事项】\n{{风险与协调事项}}\n\n## 【下周重点计划】\n{{下阶段重点任务与交付}}".into(),
             monthly: "# 月报\n\n{{日期范围}}\n\n## 【月度目标达成情况】\n{{月度目标达成情况}}\n\n## 【主要成果与业务价值】\n{{重点项目成果与实际影响}}\n\n## 【未完成事项与原因】\n{{未完成事项与原因}}\n\n## 【风险与需协调事项】\n{{风险与协调事项}}\n\n## 【下月重点计划】\n{{下阶段重点任务与交付}}".into(),
         }
     }
@@ -307,7 +312,10 @@ impl ReportTemplates {
         ] {
             let previous = format!("# {{{{标题}}}}\n\n{{{{范围}}}}\n\n## {period}概况\n{{{{概况}}}}\n\n## {period}完成\n{{{{已完成待办}}}}\n\n## 待继续推进\n{{{{未完成待办}}}}");
             let progress = format!("{kind}{{{{{date}}}}}完成任务进度和计划\n\n【完成情况】：\n{{{{项目完成情况}}}}\n\n【遇到问题】\n无\n\n【{plan}】\n{{{{项目计划}}}}");
-            if *value == previous || *value == progress {
+            if *value == previous
+                || *value == progress
+                || *value == default.replace("## 周计划进展对照\n{{周计划进展对照}}\n\n", "")
+            {
                 *value = default;
             }
         }
@@ -334,6 +342,8 @@ impl ReportTemplates {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Workspace {
+    pub plans: Vec<Plan>,
+    pub plan_weeks: Vec<PlanWeek>,
     pub notes: Vec<Note>,
     pub goals: Vec<Goal>,
     pub reports: Vec<Report>,
@@ -343,6 +353,10 @@ pub struct Workspace {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Backup {
+    #[serde(default)]
+    pub plans: Vec<Plan>,
+    #[serde(default, rename = "planWeeks")]
+    pub plan_weeks: Vec<PlanWeek>,
     #[serde(
         default,
         rename = "reportTemplates",
@@ -355,4 +369,53 @@ pub struct Backup {
     pub reports: Vec<Report>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<BackupImage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Plan {
+    pub id: String,
+    pub archived: bool,
+    pub created_at: String,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlanStatus {
+    Pending,
+    Active,
+    Completed,
+    Blocked,
+}
+impl PlanStatus {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Pending => "未开始",
+            Self::Active => "进行中",
+            Self::Completed => "已完成",
+            Self::Blocked => "阻塞",
+        }
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanWeek {
+    pub plan_id: String,
+    pub week_start: String,
+    pub title: String,
+    pub project: String,
+    pub status: PlanStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_percent: Option<u8>,
+    pub progress: String,
+    pub blocker: String,
+    pub goal_ids: Vec<String>,
+    pub carried: bool,
+    pub updated_at: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanComparison {
+    pub plan: Plan,
+    pub current: PlanWeek,
+    pub previous: Option<PlanWeek>,
+    pub goals: Vec<Goal>,
 }

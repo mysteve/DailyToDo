@@ -4,7 +4,7 @@ import { dateKey, statisticsFor, type Workspace } from './domain'
 
 export const workspace = ref<Workspace>({ notes: [], goals: [], reports: [], settings: { endpoint: 'https://api.openai.com/v1', model: '', hasApiKey: false }, storagePath: '' })
 export const selectedDate = ref(dateKey(new Date()))
-export const view = ref<'journal' | 'reports' | 'insights'>('journal')
+export const view = ref<'journal' | 'reports' | 'insights' | 'plans'>('journal')
 export const loading = ref(true)
 export const busy = ref(false)
 export const loadError = ref('')

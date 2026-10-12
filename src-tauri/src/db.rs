@@ -7,7 +7,13 @@ pub fn open(path: &Path) -> Result<Connection, String> {
     connection
         .busy_timeout(std::time::Duration::from_secs(5))
         .map_err(|e| e.to_string())?;
-    connection.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    if version > 3 {
+        return Err("数据库来自更新版本，请使用新版日迹打开".into());
+    }
+    connection.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; BEGIN IMMEDIATE;
         CREATE TABLE IF NOT EXISTS notes (id TEXT PRIMARY KEY, date TEXT NOT NULL, payload TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS notes_date ON notes(date);
         CREATE TABLE IF NOT EXISTS goals (id TEXT PRIMARY KEY, date TEXT NOT NULL, payload TEXT NOT NULL);
@@ -15,7 +21,9 @@ pub fn open(path: &Path) -> Result<Connection, String> {
         CREATE TABLE IF NOT EXISTS reports (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, payload TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS images (id TEXT PRIMARY KEY, payload TEXT NOT NULL, data BLOB NOT NULL);
-        PRAGMA user_version = 2;") .map_err(|e| e.to_string())?;
+        CREATE TABLE IF NOT EXISTS plans (id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS plan_weeks (plan_id TEXT NOT NULL REFERENCES plans(id), week_start TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(plan_id, week_start));
+        PRAGMA user_version = 3; COMMIT;") .map_err(|e| e.to_string())?;
     Ok(connection)
 }
 
@@ -42,6 +50,11 @@ pub fn load(connection: &Connection, storage_path: String) -> Result<Workspace, 
         "SELECT payload FROM reports ORDER BY created_at DESC",
     )?;
     Ok(Workspace {
+        plans: read_list(connection, "SELECT payload FROM plans ORDER BY id")?,
+        plan_weeks: read_list(
+            connection,
+            "SELECT payload FROM plan_weeks ORDER BY week_start, plan_id",
+        )?,
         notes,
         goals,
         reports,
@@ -196,6 +209,86 @@ pub fn save_goal(connection: &Connection, goal: &Goal) -> Result<(), String> {
     Ok(())
 }
 
+fn write_plan_week(connection: &Connection, row: &PlanWeek) -> Result<(), String> {
+    connection.execute("INSERT INTO plan_weeks(plan_id,week_start,payload) VALUES (?1,?2,?3) ON CONFLICT(plan_id,week_start) DO UPDATE SET payload=excluded.payload", params![row.plan_id,row.week_start,serde_json::to_string(row).map_err(|e|e.to_string())?]).map_err(|e|e.to_string())?;
+    Ok(())
+}
+
+fn validate_links(connection: &Connection, row: &PlanWeek) -> Result<(), String> {
+    let exists: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM plans WHERE id=?1)",
+            params![row.plan_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if !exists {
+        return Err("计划不存在".into());
+    }
+    for id in &row.goal_ids {
+        let exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM goals WHERE id=?1)",
+                params![id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if !exists {
+            return Err("关联待办已不存在，请重新选择".into());
+        }
+    }
+    Ok(())
+}
+
+pub fn save_plan(connection: &Connection, plan: &Plan, row: &PlanWeek) -> Result<(), String> {
+    crate::plans::validate_plan(plan)?;
+    crate::plans::validate_row(row)?;
+    if plan.id != row.plan_id {
+        return Err("计划标识不一致".into());
+    }
+    let tx = connection
+        .unchecked_transaction()
+        .map_err(|e| e.to_string())?;
+    tx.execute("INSERT INTO plans(id,payload) VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload", params![plan.id,serde_json::to_string(plan).map_err(|e|e.to_string())?]).map_err(|e|e.to_string())?;
+    validate_links(&tx, row)?;
+    write_plan_week(&tx, row)?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
+pub fn archive_plan(connection: &Connection, id: &str, archived: bool) -> Result<(), String> {
+    validate_id(id)?;
+    let raw: String = connection
+        .query_row("SELECT payload FROM plans WHERE id=?1", params![id], |r| {
+            r.get(0)
+        })
+        .map_err(|_| "计划不存在")?;
+    let mut plan: Plan = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    plan.archived = archived;
+    connection
+        .execute(
+            "UPDATE plans SET payload=?2 WHERE id=?1",
+            params![id, serde_json::to_string(&plan).map_err(|e| e.to_string())?],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn carry_plans(connection: &Connection, through: &str) -> Result<(), String> {
+    let tx = connection
+        .unchecked_transaction()
+        .map_err(|e| e.to_string())?;
+    let plans: Vec<Plan> = read_list(&tx, "SELECT payload FROM plans")?;
+    let rows: Vec<PlanWeek> = read_list(&tx, "SELECT payload FROM plan_weeks")?;
+    let existing: std::collections::HashSet<_> =
+        rows.iter().map(|r| (&r.plan_id, &r.week_start)).collect();
+    for row in crate::plans::carry(&plans, &rows, through)? {
+        if !existing.contains(&(&row.plan_id, &row.week_start)) {
+            write_plan_week(&tx, &row)?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+
 pub fn save_report(connection: &Connection, report: &Report) -> Result<(), String> {
     for note in &report.sources.notes {
         images::check_references(connection, &note.images)?;
@@ -224,6 +317,15 @@ pub fn delete(connection: &Connection, entity: &str, id: &str) -> Result<(), Str
     transaction
         .execute(sql, params![id])
         .map_err(|e| e.to_string())?;
+    if entity == "goals" {
+        let rows: Vec<PlanWeek> = read_list(&transaction, "SELECT payload FROM plan_weeks")?;
+        for mut row in rows {
+            if row.goal_ids.iter().any(|g| g == id) {
+                row.goal_ids.retain(|g| g != id);
+                write_plan_week(&transaction, &row)?;
+            }
+        }
+    }
     images::prune(&transaction)?;
     transaction.commit().map_err(|e| e.to_string())
 }
@@ -239,11 +341,23 @@ pub fn save_settings(connection: &Connection, settings: &AiSettings) -> Result<(
 }
 
 pub fn import(connection: &mut Connection, backup: &Backup) -> Result<(), String> {
-    if !matches!(backup.version, 1 | 2) {
+    if !matches!(backup.version, 1 | 2 | 3) {
         return Err("不支持的备份版本".into());
     }
-    if backup.notes.len() + backup.goals.len() + backup.reports.len() > 100000 {
+    if backup.notes.len()
+        + backup.goals.len()
+        + backup.reports.len()
+        + backup.plans.len()
+        + backup.plan_weeks.len()
+        > 100000
+    {
         return Err("备份记录过多".into());
+    }
+    for plan in &backup.plans {
+        crate::plans::validate_plan(plan)?;
+    }
+    for row in &backup.plan_weeks {
+        crate::plans::validate_row(row)?;
     }
     for note in &backup.notes {
         validate_note(note)?;
@@ -268,6 +382,26 @@ pub fn import(connection: &mut Connection, backup: &Backup) -> Result<(), String
         }
         for goal in &report.sources.goals {
             validate_goal(goal)?;
+        }
+        for comparison in &report.sources.plan_comparisons {
+            crate::plans::validate_plan(&comparison.plan)?;
+            crate::plans::validate_row(&comparison.current)?;
+            if comparison.plan.id != comparison.current.plan_id {
+                return Err("计划来源标识不一致".into());
+            }
+            if let Some(previous) = &comparison.previous {
+                crate::plans::validate_row(previous)?;
+                if previous.plan_id != comparison.plan.id
+                    || (validate_date(&comparison.current.week_start)? - chrono::Duration::days(7))
+                        .to_string()
+                        != previous.week_start
+                {
+                    return Err("计划对照日期不正确".into());
+                }
+            }
+            for goal in &comparison.goals {
+                validate_goal(goal)?;
+            }
         }
         if report.sources.commits.len() > 2000 {
             return Err("报告来源提交过多".into());
@@ -305,6 +439,40 @@ pub fn import(connection: &mut Connection, backup: &Backup) -> Result<(), String
                     goal.id,
                     goal.date,
                     serde_json::to_string(goal).map_err(|e| e.to_string())?
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+    }
+    for plan in &backup.plans {
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO plans(id,payload) VALUES (?1,?2)",
+                params![
+                    plan.id,
+                    serde_json::to_string(plan).map_err(|e| e.to_string())?
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+    }
+    for row in &backup.plan_weeks {
+        let exists: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM plan_weeks WHERE plan_id=?1 AND week_start=?2)",
+                params![row.plan_id, row.week_start],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if exists {
+            continue;
+        }
+        validate_links(&transaction, row)?;
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO plan_weeks(plan_id,week_start,payload) VALUES (?1,?2,?3)",
+                params![
+                    row.plan_id,
+                    row.week_start,
+                    serde_json::to_string(row).map_err(|e| e.to_string())?
                 ],
             )
             .map_err(|e| e.to_string())?;
@@ -360,6 +528,8 @@ mod tests {
         import(
             &mut connection,
             &Backup {
+                plans: vec![],
+                plan_weeks: vec![],
                 report_templates: None,
                 version: 1,
                 notes: vec![incoming],
@@ -381,6 +551,8 @@ mod tests {
         assert!(import(
             &mut connection,
             &Backup {
+                plans: vec![],
+                plan_weeks: vec![],
                 report_templates: None,
                 version: 1,
                 notes: vec![note(), invalid],
@@ -466,6 +638,8 @@ mod tests {
         let mut note = note();
         note.images.push(asset.image.clone());
         let backup = Backup {
+            plans: vec![],
+            plan_weeks: vec![],
             report_templates: None,
             version: 2,
             notes: vec![note.clone()],
@@ -476,6 +650,8 @@ mod tests {
         import(&mut original, &backup).unwrap();
         let workspace = load(&original, String::new()).unwrap();
         let encoded = serde_json::to_string(&Backup {
+            plans: vec![],
+            plan_weeks: vec![],
             report_templates: None,
             version: 2,
             images: images::export(&original, &workspace).unwrap(),
@@ -492,6 +668,8 @@ mod tests {
         );
         let mut empty = open(Path::new(":memory:")).unwrap();
         let missing = Backup {
+            plans: vec![],
+            plan_weeks: vec![],
             report_templates: None,
             version: 2,
             notes: vec![note],
@@ -658,6 +836,8 @@ mod tests {
         let loaded = settings(&connection).unwrap();
         assert_eq!(loaded.report_templates.daily, config.report_templates.daily);
         let backup = Backup {
+            plans: vec![],
+            plan_weeks: vec![],
             version: 2,
             notes: vec![],
             goals: vec![],

@@ -3,6 +3,7 @@ mod db;
 mod git;
 mod images;
 mod models;
+mod plans;
 mod reports;
 
 use models::*;
@@ -26,7 +27,12 @@ fn database(state: &AppState) -> Result<MutexGuard<'_, Connection>, String> {
 
 #[tauri::command]
 fn load_workspace(state: State<'_, AppState>) -> Result<Workspace, String> {
-    let mut workspace = db::load(&*database(&state)?, state.storage_path.clone())?;
+    let connection = database(&state)?;
+    db::carry_plans(
+        &connection,
+        &chrono::Local::now().format("%Y-%m-%d").to_string(),
+    )?;
+    let mut workspace = db::load(&connection, state.storage_path.clone())?;
     workspace.settings.has_api_key = ai::read_key().ok().flatten().is_some();
     workspace.settings.git.has_token = git::read_token().ok().flatten().is_some();
     Ok(workspace)
@@ -64,6 +70,19 @@ fn save_goals(state: State<'_, AppState>, goals: Vec<Goal>) -> Result<(), String
 #[tauri::command]
 fn delete_goal(state: State<'_, AppState>, id: String) -> Result<(), String> {
     db::delete(&*database(&state)?, "goals", &id)
+}
+
+#[tauri::command]
+fn save_plan(state: State<'_, AppState>, plan: Plan, row: PlanWeek) -> Result<(), String> {
+    db::save_plan(&*database(&state)?, &plan, &row)
+}
+#[tauri::command]
+fn archive_plan(state: State<'_, AppState>, id: String, archived: bool) -> Result<(), String> {
+    db::archive_plan(&*database(&state)?, &id, archived)
+}
+#[tauri::command]
+fn carry_plans(state: State<'_, AppState>, through: String) -> Result<(), String> {
+    db::carry_plans(&*database(&state)?, &through)
 }
 
 #[tauri::command]
@@ -198,6 +217,7 @@ async fn generate_report(
     let use_commits = request.mode == GenerationMode::Ai && request.include_commits;
     let (workspace, key, git_token) = {
         let db = database(&state)?;
+        db::carry_plans(&db, &chrono::Local::now().format("%Y-%m-%d").to_string())?;
         let workspace = db::load(&db, state.storage_path.clone())?;
         let key = if request.mode == GenerationMode::Ai {
             ai::read_key()?
@@ -211,12 +231,21 @@ async fn generate_report(
         };
         (workspace, key, git_token)
     };
+    let comparisons = if request.r#type == ReportType::Weekly {
+        plans::comparisons(&workspace, &start, &end)?
+    } else {
+        vec![]
+    };
     let goals: Vec<_> = workspace
         .goals
         .into_iter()
         .filter(|goal| goal.date >= start && goal.date <= end)
         .collect();
-    let mut report = reports::make_report(&request, vec![], goals)?;
+    let mut report = if comparisons.is_empty() {
+        reports::make_report(&request, vec![], goals)?
+    } else {
+        reports::make_report_with_plans(&request, goals, comparisons)?
+    };
     report.markdown = reports::render_template(&report, &workspace.settings.report_templates)?;
     if use_commits {
         let token = git_token.ok_or("请先在设置中配置 Git 访问令牌")?;
@@ -229,6 +258,7 @@ async fn generate_report(
     if request.mode == GenerationMode::Ai {
         report.markdown =
             ai::generate(&workspace.settings, key.as_deref(), &report, &request).await?;
+        report.markdown = plans::finish(&report.markdown, &report.sources.plan_comparisons);
         report.model = workspace.settings.model;
     }
     db::save_report(&*database(&state)?, &report)?;
@@ -297,8 +327,10 @@ async fn export_backup(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
         (workspace, images)
     };
     let backup = Backup {
+        plans: workspace.plans,
+        plan_weeks: workspace.plan_weeks,
         report_templates: Some(workspace.settings.report_templates),
-        version: 2,
+        version: 3,
         notes: workspace.notes,
         goals: workspace.goals,
         reports: workspace.reports,
@@ -427,6 +459,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             load_workspace,
+            save_plan,
+            archive_plan,
+            carry_plans,
             save_note,
             read_note_image,
             delete_note,
