@@ -144,13 +144,15 @@ export type ReportTemplates = Record<ReportType, string>
 
 export const templateVariables = ['周计划进展对照', '标题', '日期年-月-日', '日期范围', '汇报摘要', '月度目标达成情况', '重点项目成果与实际影响', '风险与协调事项', '下阶段重点任务与交付', '未完成事项与原因', '项目完成情况', '项目计划', '范围', '概况', '已完成待办', '未完成待办', '每日待办', '耗时统计'] as const
 export const defaultReportTemplates: ReportTemplates = {
-  daily: '# 日报 {{日期年-月-日}}\n\n## 【总体情况】\n{{汇报摘要}}\n\n## 【重点工作与交付】\n{{重点项目成果与实际影响}}\n\n## 【风险与需协调事项】\n{{风险与协调事项}}\n\n## 【明日重点计划】\n{{下阶段重点任务与交付}}',
+  daily: '# 日报 {{日期年-月-日}}\n\n## 【重点工作与交付】\n{{项目完成情况}}\n\n## 【风险与需协调事项】\n{{风险与协调事项}}\n\n## 【明日重点计划】\n{{项目计划}}',
   weekly: '# 周报\n\n{{日期范围}}\n\n## 【本周总体情况】\n{{汇报摘要}}\n\n## 周计划进展对照\n{{周计划进展对照}}\n\n## 【重点项目与节点进展】\n{{重点项目成果与实际影响}}\n\n## 【进度风险与需协调事项】\n{{风险与协调事项}}\n\n## 【下周重点计划】\n{{下阶段重点任务与交付}}',
   monthly: '# 月报\n\n{{日期范围}}\n\n## 【月度目标达成情况】\n{{月度目标达成情况}}\n\n## 【主要成果与业务价值】\n{{重点项目成果与实际影响}}\n\n## 【未完成事项与原因】\n{{未完成事项与原因}}\n\n## 【风险与需协调事项】\n{{风险与协调事项}}\n\n## 【下月重点计划】\n{{下阶段重点任务与交付}}',
 }
 
 export function resolveReportTemplates(saved?: Partial<ReportTemplates>): ReportTemplates {
   const templates = { ...defaultReportTemplates, ...saved }
+  const previousDaily = '# 日报 {{日期年-月-日}}\n\n## 【总体情况】\n{{汇报摘要}}\n\n## 【重点工作与交付】\n{{重点项目成果与实际影响}}\n\n## 【风险与需协调事项】\n{{风险与协调事项}}\n\n## 【明日重点计划】\n{{下阶段重点任务与交付}}'
+  if (templates.daily === previousDaily) templates.daily = defaultReportTemplates.daily
   for (const [type, period, kind, date, plan] of [
     ['daily', '今日', '日报', '日期年-月-日', '明日计划'],
     ['weekly', '本周', '周报', '日期范围', '下周计划'],
@@ -244,7 +246,7 @@ export function selectSources(workspace: Pick<Workspace, 'notes' | 'goals'>, req
   const { start, end } = requestPeriod(request)
   return {
     notes: [] as Note[],
-    goals: workspace.goals.filter(goal => goal.date >= start && goal.date <= end),
+    goals: workspace.goals.filter(goal => goal.date <= end && (goal.date >= start || request.type === 'daily' && !goal.completed)),
   }
 }
 
@@ -280,12 +282,12 @@ export function noteSummary(note: Note): string {
   return [note.content, images ? `附图 ${images} 张` : ''].filter(Boolean).join(' · ')
 }
 
-function projectItems(goals: Goal[], detail?: { label: string; confirmation: string }): string {
+function projectItems(goals: Goal[], detail?: { label: string; confirmation: string }, includeTime = true, singleLine = false): string {
   if (!goals.length) return '暂无'
   const projects = new Map<string, string[]>()
   for (const goal of goals) {
     const title = goal.title.trim()
-    const spent = goal.actualMin === undefined ? '' : `（实际耗时 ${formatMinutes(goal.actualMin)}）`
+    const spent = !includeTime || goal.actualMin === undefined ? '' : `（实际耗时 ${formatMinutes(goal.actualMin)}）`
     const explicit = goal.project?.trim()
     if (explicit) {
       const items = projects.get(explicit) || []
@@ -305,6 +307,7 @@ function projectItems(goals: Goal[], detail?: { label: string; confirmation: str
   }
   const number = (index: number) => index < 20 ? String.fromCodePoint(0x2460 + index) : `${index + 1}、`
   return [...projects].map(([project, items], index) => {
+    if (singleLine) return `${project}\n${items.map((content, item) => `${item + 1}、${content}`).join('\n')}`
     const lines = items.map((content, item) => `${number(item)}${detail ? `${detail.label}：` : ''}${content}`)
     if (detail) lines.push(`${number(items.length)}${detail.confirmation}：待确认`)
     return `${index + 1}、${project}：\n${lines.join('\n')}`
@@ -322,20 +325,26 @@ function recordedRisks(goals: Goal[]): string[] {
   return items
 }
 
+export function dailyReportTemplate(template: string): string {
+  const hasPlan = /\{\{\s*(项目计划|下阶段重点任务与交付|未完成待办)\s*\}\}/.test(template)
+  return hasPlan ? template : `${template.trimEnd()}\n\n## 【明日重点计划】\n{{项目计划}}`
+}
+
 export function localReport(workspace: Pick<Workspace, 'notes' | 'goals'> & PlanData & { settings?: AiSettings }, request: ReportRequest): Report {
   const { start, end } = requestPeriod(request)
   const { notes, goals } = selectSources(workspace, request)
   const comparisons = planComparisons(workspace, request)
   if (!goals.length && !comparisons.length) throw new Error('所选范围内没有可用于生成报告的待办事项或周计划')
   const stats = statisticsFor([], goals)
+  const isDaily = request.type === 'daily'
   const title = `${shortDate(start)}${start !== end ? ` — ${shortDate(end)}` : ''}工作${typeNames[request.type]}`
-  const list = (items: Goal[]) => items.length ? items.map(goal => `- [${goal.completed ? 'x' : ' '}] ${goal.project?.trim() ? `【${goal.project.trim()}】` : ''}${goal.title}${goal.adHoc ? '（插活）' : ''}（${shortDate(goal.date)}${goal.actualMin === undefined ? '' : `，耗时 ${formatMinutes(goal.actualMin)}`}）`).join('\n') : '暂无'
+  const list = (items: Goal[]) => items.length ? items.map(goal => `- [${goal.completed ? 'x' : ' '}] ${goal.project?.trim() ? `【${goal.project.trim()}】` : ''}${goal.title}${goal.adHoc ? '（插活）' : ''}${isDaily ? '' : `（${shortDate(goal.date)}${goal.actualMin === undefined ? '' : `，耗时 ${formatMinutes(goal.actualMin)}`}）`}`).join('\n') : '暂无'
   const daily = [...new Set(goals.map(goal => goal.date))].sort().map(date => `### ${shortDate(date)}\n\n${list(goals.filter(goal => goal.date === date))}`).join('\n\n')
   const completed = goals.filter(goal => goal.completed)
   const unfinished = goals.filter(goal => !goal.completed)
-  const risks = recordedRisks(unfinished)
+  const risks = recordedRisks(isDaily ? goals : unfinished)
   const period = { daily: '今日', weekly: '本周', monthly: '本月' }[request.type]
-  const timeNote = timeSummary(goals)
+  const timeNote = isDaily ? null : timeSummary(goals)
   const summary = `${comparisons.length ? `周计划 ${comparisons.length} 项，已完成 ${comparisons.filter(r => r.current.status === 'completed').length} 项，阻塞 ${comparisons.filter(r => r.current.status === 'blocked').length} 项。\n` : ''}${period}共 ${stats.goals} 项待办，已完成 ${stats.completed} 项，待推进 ${unfinished.length} 项。${timeNote ? `\n${timeNote}` : ''}`
   const values: Record<string, string> = {
     周计划进展对照: planTable(comparisons),
@@ -343,16 +352,16 @@ export function localReport(workspace: Pick<Workspace, 'notes' | 'goals'> & Plan
     日期范围: start === end ? end : `${start} — ${end}`,
     汇报摘要: summary,
     月度目标达成情况: `${summary}\n月度目标、验收标准及达成情况：待确认`,
-    重点项目成果与实际影响: projectItems(completed, { label: '成果或进度', confirmation: '实际影响' }),
-    风险与协调事项: risks.length ? `风险、进度影响及需协调事项：\n${risks.join('\n')}${risks.length < unfinished.length ? `\n其余 ${unfinished.length - risks.length} 项未记录风险或问题：待确认` : ''}` : '风险、进度影响及需协调事项：待确认',
-    下阶段重点任务与交付: projectItems(unfinished, { label: '重点任务', confirmation: '预期交付及完成时间' }),
-    未完成事项与原因: unfinished.length ? `待推进事项：\n${projectItems(unfinished)}\n\n未完成原因：${risks.length ? `\n${risks.join('\n')}` : '待确认'}` : '所选范围内无未完成待办。',
-    项目完成情况: projectItems(goals.filter(goal => goal.completed)),
-    项目计划: projectItems(goals.filter(goal => !goal.completed)),
+    重点项目成果与实际影响: projectItems(completed, isDaily ? undefined : { label: '成果或进度', confirmation: '实际影响' }, !isDaily, isDaily),
+    风险与协调事项: isDaily ? risks.join('\n') || '无' : risks.length ? `风险、进度影响及需协调事项：\n${risks.join('\n')}${risks.length < unfinished.length ? `\n其余 ${unfinished.length - risks.length} 项未记录风险或问题：待确认` : ''}` : '风险、进度影响及需协调事项：待确认',
+    下阶段重点任务与交付: isDaily ? unfinished.map((goal, i) => `${i + 1}、${goal.title}`).join('\n') || '暂无' : projectItems(unfinished, { label: '重点任务', confirmation: '预期交付及完成时间' }),
+    未完成事项与原因: unfinished.length ? `待推进事项：\n${projectItems(unfinished, undefined, !isDaily)}\n\n未完成原因：${risks.length ? `\n${risks.join('\n')}` : '待确认'}` : '所选范围内无未完成待办。',
+    项目完成情况: projectItems(completed, undefined, !isDaily, isDaily),
+    项目计划: isDaily ? unfinished.map((goal, i) => `${i + 1}、${goal.title}`).join('\n') || '暂无' : projectItems(unfinished),
     概况: `${stats.days} 天，共 ${stats.goals} 项待办，已完成 ${stats.completed} 项，完成率 ${stats.completionRate}%。${timeNote ? `\n${timeNote}` : ''}`,
-    耗时统计: timeNote ?? '未记录耗时',
+    耗时统计: isDaily ? '' : timeNote ?? '未记录耗时',
     已完成待办: list(goals.filter(goal => goal.completed)),
-    未完成待办: list(goals.filter(goal => !goal.completed)), 每日待办: daily,
+    未完成待办: isDaily ? unfinished.map((goal, i) => `${i + 1}、${goal.title}`).join('\n') || '暂无' : list(unfinished), 每日待办: daily,
   }
   if (comparisons.length) {
     const blocked = comparisons.filter(r => r.current.status === 'blocked').map(r => `${r.current.title}：${r.current.blocker}`)
@@ -360,8 +369,8 @@ export function localReport(workspace: Pick<Workspace, 'notes' | 'goals'> & Plan
   }
   const templates = resolveReportTemplates(workspace.settings?.reportTemplates)
   validateReportTemplates(templates)
-  let template = templates[request.type]
-  if (request.style === 'detailed' && !template.includes('{{每日待办}}')) template += '\n\n## 每日待办\n{{每日待办}}'
+  let template = isDaily ? dailyReportTemplate(templates.daily) : templates[request.type]
+  if (!isDaily && request.style === 'detailed' && !template.includes('{{每日待办}}')) template += '\n\n## 每日待办\n{{每日待办}}'
   if (comparisons.length && !template.includes('{{周计划进展对照}}')) template += '\n\n## 周计划进展对照\n{{周计划进展对照}}'
   const markdown = template.replace(/\{\{([^{}]*)\}\}/g, (_, key: string) => Object.hasOwn(values, key.trim()) ? values[key.trim()]! : `待填写：${key.trim() || '自定义字段'}`)
   return { id: crypto.randomUUID(), title, type: request.type, style: request.style, mode: 'local', startDate: start, endDate: end, markdown, statistics: stats, createdAt: new Date().toISOString(), model: '', sources: structuredClone({ notes, goals, planComparisons: comparisons }) }

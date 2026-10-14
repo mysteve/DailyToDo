@@ -236,11 +236,7 @@ async fn generate_report(
     } else {
         vec![]
     };
-    let goals: Vec<_> = workspace
-        .goals
-        .into_iter()
-        .filter(|goal| goal.date >= start && goal.date <= end)
-        .collect();
+    let goals = workspace.goals;
     let mut report = if comparisons.is_empty() {
         reports::make_report(&request, vec![], goals)?
     } else {

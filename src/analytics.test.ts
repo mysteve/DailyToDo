@@ -38,13 +38,15 @@ describe('待办项目与耗时', () => {
     expect(summary.accuracy).toEqual({ count: 1, ratio: 1.5 })
     expect(summarize([goal('2026-10-09')]).accuracy).toBeNull()
   })
-  it('领域统计与报告带上项目和耗时，且不虚构未记录的耗时', () => {
+  it('领域统计保留耗时，日报正文仅包含项目和事项', () => {
     const goals = [goal('2026-10-09', { title: '写方案', project: '官网', completed: true, actualMin: 90 }), goal('2026-10-09', { title: '开会' })]
     const stats = statisticsFor([], goals)
     expect(stats).toMatchObject({ actualMinutes: 90, estimateMinutes: 0 })
     const request = { type: 'daily', style: 'concise', anchorDate: '2026-10-09', startDate: '', endDate: '', templateId: 'x', includeNotes: false, includeGoals: true } as unknown as ReportRequest
     const report = localReport({ notes: [], goals }, request)
-    expect(JSON.stringify(report)).toContain('1 小时 30 分钟')
+    expect(report.markdown).toContain('官网')
+    expect(report.markdown).not.toContain('耗时')
+    expect(report.sources.goals[0]?.actualMin).toBe(90)
     const none = localReport({ notes: [], goals: [goals[1]] }, request)
     expect(JSON.stringify(none)).not.toContain('实际耗时')
   })

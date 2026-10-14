@@ -6,6 +6,43 @@ const note = (date: string, kind: Note['kind'] = 'progress'): Note => ({ id: cry
 const goal = (date: string, completed: boolean): Goal => ({ id: crypto.randomUUID(), date, title: completed ? '完成设计' : '待确认接口', completed, createdAt: `${date}T09:00:00+08:00`, updatedAt: `${date}T09:00:00+08:00` })
 
 describe('按用户选择的周期整理报告', () => {
+  it('日报明日计划包含截至当天的所有积压，排除往日完成项和未来待办', () => {
+    const goals = [
+      { ...goal('2026-09-30', false), title: '积压目标：完成接口联调' },
+      { ...goal('2026-10-08', true), title: '昨日已完成' },
+      { ...goal('2026-10-09', true), title: '今日交付' },
+      { ...goal('2026-10-09', false), title: '当天未完成' },
+      { ...goal('2026-10-10', false), title: '未来待办' },
+    ]
+    const data = { notes: [], goals }
+    for (const style of ['brief', 'detailed', 'review'] as const) {
+      const report = localReport(data, { ...request, type: 'daily', style })
+      const [completed, planned] = report.markdown.split('【明日重点计划】')
+      expect(completed).toContain('今日交付')
+      expect(completed).not.toContain('积压目标')
+      expect(planned?.trim()).toBe('1、积压目标：完成接口联调\n2、当天未完成')
+      expect(report.markdown).not.toMatch(/昨日已完成|未来待办/)
+      expect(report.sources.goals).toHaveLength(3)
+      expect(report.statistics).toMatchObject({ goals: 3, completed: 1 })
+    }
+    const onlyBacklog = localReport({ notes: [], goals: [goals[0]!] }, { ...request, type: 'daily' })
+    expect(onlyBacklog.markdown).toContain('【明日重点计划】\n1、积压目标：完成接口联调')
+    expect(localReport(data, request).sources.goals).toHaveLength(4)
+    expect(localReport(data, { ...request, type: 'monthly' }).sources.goals).toHaveLength(4)
+  })
+
+  it('日报自定义模板缺少计划字段时补充明日计划，已有字段时不重复', () => {
+    const custom = '# 我的日报\n{{项目完成情况}}'
+    const settings = { endpoint: '', model: '', hasApiKey: false, reportTemplates: { ...defaultReportTemplates, daily: custom } }
+    const data = { notes: [], goals: [goal('2026-10-08', false)], settings }
+    expect(localReport(data, { ...request, type: 'daily' }).markdown).toBe('# 我的日报\n暂无\n\n## 【明日重点计划】\n1、待确认接口')
+    expect(settings.reportTemplates.daily).toBe(custom)
+    for (const token of ['项目计划', '下阶段重点任务与交付', '未完成待办']) {
+      settings.reportTemplates.daily = `# 日报\n## 明日计划\n{{ ${token} }}`
+      expect(localReport(data, { ...request, type: 'daily' }).markdown).toBe('# 日报\n## 明日计划\n1、待确认接口')
+    }
+  })
+
   it('周从周一开始，跨年周与闰月计算准确', () => {
     expect(periodFor('weekly', '2027-01-01')).toEqual({ start: '2026-12-28', end: '2027-01-03' })
     expect(periodFor('weekly', '2026-10-11')).toEqual({ start: '2026-10-05', end: '2026-10-11' })
@@ -107,7 +144,6 @@ describe('按用户选择的周期整理报告', () => {
       { ...goal('2026-10-09', false), title: '未填写项目的事项' },
     ]
     for (const [type, header, plan] of [
-      ['daily', '# 日报 2026-10-09', '明日重点计划'],
       ['weekly', '# 周报\n\n2026-10-05 — 2026-10-11', '下周重点计划'],
       ['monthly', '# 月报\n\n2026-10-01 — 2026-10-31', '下月重点计划'],
     ] as const) {
@@ -150,9 +186,9 @@ describe('按用户选择的周期整理报告', () => {
     const plain = localReport({ notes: [], goals: [goal('2026-10-09', false)] }, monthly)
     expect(plain.markdown).toContain('风险、进度影响及需协调事项：待确认')
     expect(plain.markdown).toContain('未完成原因：待确认')
-    const templates = { ...defaultReportTemplates, daily: '{{未完成待办}}' }
+    const templates = { ...defaultReportTemplates, weekly: '{{未完成待办}}' }
     const settings = { endpoint: '', model: '', hasApiKey: false, reportTemplates: templates }
-    const adhoc = localReport({ notes: [], goals: [{ ...goal('2026-10-09', false), title: '临时插入', adHoc: true }], settings }, { ...request, type: 'daily' })
+    const adhoc = localReport({ notes: [], goals: [{ ...goal('2026-10-09', false), title: '临时插入', adHoc: true }], settings }, request)
     expect(adhoc.markdown).toContain('临时插入（插活）')
   })
   it('旧默认模板自动更新，自定义模板和旧变量保持可用', () => {

@@ -150,7 +150,11 @@ pub fn make_report_with_plans(
     let (start_date, end_date) = period(request)?;
     let goals: Vec<_> = goals
         .into_iter()
-        .filter(|goal| goal.date >= start_date && goal.date <= end_date)
+        .filter(|goal| {
+            goal.date <= end_date
+                && (goal.date >= start_date
+                    || request.r#type == ReportType::Daily && !goal.completed)
+        })
         .collect();
     if goals.is_empty() && comparisons.is_empty() {
         return Err("所选范围内没有可用于生成报告的待办事项".into());
@@ -198,6 +202,14 @@ fn item_number(index: usize) -> String {
 }
 
 fn project_items(goals: Vec<&Goal>, detail: Option<(&str, &str)>) -> String {
+    project_items_layout(goals, detail, false)
+}
+
+fn project_items_layout(
+    goals: Vec<&Goal>,
+    detail: Option<(&str, &str)>,
+    single_line: bool,
+) -> String {
     let mut projects: Vec<(&str, Vec<String>)> = Vec::new();
     for goal in goals {
         let title = goal.title.trim();
@@ -242,6 +254,17 @@ fn project_items(goals: Vec<&Goal>, detail: Option<(&str, &str)>) -> String {
         .iter()
         .enumerate()
         .map(|(index, (project, items))| {
+            if single_line {
+                return format!(
+                    "{project}\n{}",
+                    items
+                        .iter()
+                        .enumerate()
+                        .map(|(i, content)| format!("{}、{content}", i + 1))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                );
+            }
             let mut lines = items
                 .iter()
                 .enumerate()
@@ -264,10 +287,160 @@ fn project_items(goals: Vec<&Goal>, detail: Option<(&str, &str)>) -> String {
         .join("\n")
 }
 
+pub const DAILY_RISK_SLOT: &str = "RIJI_DAILY_RISK_SLOT";
+pub const DAILY_PLAN_SLOT: &str = "RIJI_DAILY_PLAN_SLOT";
+
+pub fn daily_risks(report: &Report) -> String {
+    recorded_reasons(&report.sources.goals.iter().collect::<Vec<_>>())
+        .unwrap_or_else(|| "无".into())
+}
+
+pub fn daily_plan(report: &Report) -> String {
+    let lines = report
+        .sources
+        .goals
+        .iter()
+        .filter(|g| !g.completed)
+        .enumerate()
+        .map(|(i, g)| format!("{}、{}", i + 1, g.title))
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        "暂无".into()
+    } else {
+        lines.join("\n")
+    }
+}
+
+pub fn daily_report_template(template: &str) -> String {
+    let has_plan = template.split("{{").skip(1).any(|part| {
+        part.split_once("}}").is_some_and(|(key, _)| {
+            matches!(
+                key.trim(),
+                "项目计划" | "下阶段重点任务与交付" | "未完成待办"
+            )
+        })
+    });
+    if has_plan {
+        template.into()
+    } else {
+        format!(
+            "{}\n\n## 【明日重点计划】\n{{{{项目计划}}}}",
+            template.trim_end()
+        )
+    }
+}
+
+pub fn daily_ai_template(template: &str) -> String {
+    let template = daily_report_template(template);
+    // Parse template tokens so whitespace accepted by local reports also works for AI.
+    let mut output = String::new();
+    let mut rest = template.as_str();
+    while let Some(start) = rest.find("{{") {
+        output.push_str(&rest[..start]);
+        let token = &rest[start + 2..];
+        let Some((key, tail)) = token.split_once("}}") else {
+            output.push_str(&rest[start..]);
+            rest = "";
+            break;
+        };
+        match key.trim() {
+            "风险与协调事项" => output.push_str(DAILY_RISK_SLOT),
+            "项目计划" | "下阶段重点任务与交付" | "未完成待办" => {
+                output.push_str(DAILY_PLAN_SLOT)
+            }
+            _ => output.push_str(&rest[start..start + 2 + key.len() + 2]),
+        }
+        rest = tail;
+    }
+    output.push_str(rest);
+    output
+}
+
+pub fn finish_daily_ai(content: &str, report: &Report, template: &str) -> Result<String, String> {
+    let template = daily_ai_template(template);
+    for slot in [DAILY_RISK_SLOT, DAILY_PLAN_SLOT] {
+        if template.contains(slot) && !content.lines().any(|line| line.trim() == slot) {
+            return Err("AI 未保留日报风险或计划位置，请重新生成".into());
+        }
+    }
+    // Only replace standalone markers, never marker text inside a todo title.
+    let risks = daily_risks(report);
+    let plan = daily_plan(report);
+    let content = flatten_daily_completed_items(content);
+    Ok(content
+        .lines()
+        .map(|line| match line.trim() {
+            DAILY_RISK_SLOT => risks.as_str(),
+            DAILY_PLAN_SLOT => plan.as_str(),
+            _ => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+fn flatten_daily_completed_items(content: &str) -> String {
+    let mut output = Vec::new();
+    let mut in_completed = false;
+    let mut has_summary = false;
+    let mut number = 0usize;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        let heading = trimmed
+            .trim_start_matches('#')
+            .trim()
+            .trim_end_matches(['：', ':']);
+        if matches!(
+            heading,
+            "【重点工作与交付】" | "【完成情况】" | "重点工作与交付" | "完成情况"
+        ) {
+            in_completed = true;
+            has_summary = false;
+            number = 0;
+        } else if trimmed == DAILY_RISK_SLOT
+            || trimmed == DAILY_PLAN_SLOT
+            || (trimmed.starts_with("## ") || trimmed.starts_with("【") && trimmed.ends_with('】'))
+        {
+            in_completed = false;
+        }
+        if in_completed {
+            if let Some((prefix, summary)) = trimmed.split_once('、') {
+                if let Ok(index) = prefix.parse::<usize>() {
+                    let summary = summary.trim();
+                    has_summary = summary
+                        .split_once(['：', ':'])
+                        .is_some_and(|(_, description)| !description.trim().is_empty());
+                    number = index;
+                    if !summary.is_empty() && summary.ends_with(['：', ':']) {
+                        output.push(summary.trim_end_matches(['：', ':']).to_string());
+                        number = 0;
+                        continue;
+                    }
+                }
+            } else if let Some(first) = trimmed.chars().next().filter(|c| ('①'..='⑳').contains(c))
+            {
+                // A numbered summary is the complete item; discard its nested details.
+                if has_summary {
+                    continue;
+                }
+                // If the model supplied only a project heading, retain each actual item.
+                number += 1;
+                output.push(format!("{number}、{}", trimmed[first.len_utf8()..].trim()));
+                continue;
+            } else if !trimmed.is_empty() {
+                has_summary = false;
+                number = 0;
+            }
+        }
+        output.push(line.to_string());
+    }
+    output.join("\n")
+}
+
 pub fn render_template(report: &Report, templates: &ReportTemplates) -> Result<String, String> {
     templates.validate()?;
     let stats = &report.statistics;
     let goals = &report.sources.goals;
+    let is_daily = report.r#type == ReportType::Daily;
     let list = |items: Vec<&Goal>| -> String {
         if items.is_empty() {
             return "暂无".into();
@@ -285,6 +458,13 @@ pub fn render_template(report: &Report, templates: &ReportTemplates) -> Result<S
                     .map(|minutes| format!("，耗时 {}", format_minutes(minutes as u64)))
                     .unwrap_or_default();
                 let adhoc = if goal.ad_hoc { "（插活）" } else { "" };
+                if is_daily {
+                    return format!(
+                        "- [{}] {project}{}{adhoc}",
+                        if goal.completed { "x" } else { " " },
+                        goal.title
+                    );
+                }
                 format!(
                     "- [{}] {project}{}{adhoc}（{}{spent}）",
                     if goal.completed { "x" } else { " " },
@@ -316,7 +496,7 @@ pub fn render_template(report: &Report, templates: &ReportTemplates) -> Result<S
         ReportType::Weekly => "本周",
         ReportType::Monthly => "本月",
     };
-    let time_note = time_summary(goals);
+    let time_note = if is_daily { None } else { time_summary(goals) };
     let mut summary = format!(
         "{period}共 {} 项待办，已完成 {} 项，待推进 {} 项。{}",
         stats.goals,
@@ -444,6 +624,46 @@ pub fn render_template(report: &Report, templates: &ReportTemplates) -> Result<S
         ),
         ("每日待办", daily),
     ];
+    if is_daily {
+        let untimed: Vec<_> = goals
+            .iter()
+            .filter(|g| g.completed)
+            .cloned()
+            .map(|mut g| {
+                g.actual_min = None;
+                g
+            })
+            .collect();
+        let completed = project_items_layout(untimed.iter().collect(), None, true);
+        let plan = daily_plan(report);
+        let risks = daily_risks(report);
+        for (key, value) in &mut values {
+            match *key {
+                "重点项目成果与实际影响" | "项目完成情况" => {
+                    *value = completed.clone()
+                }
+                "下阶段重点任务与交付" | "项目计划" | "未完成待办" => {
+                    *value = plan.clone()
+                }
+                "风险与协调事项" => *value = risks.clone(),
+                "未完成事项与原因" => {
+                    *value = if plan == "暂无" {
+                        "所选范围内无未完成待办。".into()
+                    } else {
+                        format!(
+                            "待推进事项：\n{plan}\n\n未完成原因：{}",
+                            recorded_reasons(
+                                &goals.iter().filter(|g| !g.completed).collect::<Vec<_>>()
+                            )
+                            .unwrap_or_else(|| "待确认".into())
+                        )
+                    };
+                }
+                "耗时统计" => value.clear(),
+                _ => {}
+            }
+        }
+    }
     let blocked: Vec<_> = comparisons
         .iter()
         .filter(|r| r.current.status == PlanStatus::Blocked)
@@ -460,8 +680,13 @@ pub fn render_template(report: &Report, templates: &ReportTemplates) -> Result<S
             }
         }
     }
-    let mut template = templates.get(&report.r#type).to_string();
-    if report.style == ReportStyle::Detailed && !template.contains("{{每日待办}}") {
+    let mut template = if is_daily {
+        daily_report_template(&templates.daily)
+    } else {
+        templates.get(&report.r#type).to_string()
+    };
+    if !is_daily && report.style == ReportStyle::Detailed && !template.contains("{{每日待办}}")
+    {
         template.push_str("\n\n## 每日待办\n{{每日待办}}");
     }
     if !report.sources.plan_comparisons.is_empty() && !template.contains("{{周计划进展对照}}")
@@ -502,6 +727,191 @@ pub fn render_template(report: &Report, templates: &ReportTemplates) -> Result<S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn daily_plan_includes_backlog_without_past_completions_or_future_todos() {
+        let goals: Vec<_> = [
+            ("2026-09-30", "积压目标：完成接口联调", false),
+            ("2026-10-08", "昨日已完成", true),
+            ("2026-10-09", "今日交付", true),
+            ("2026-10-09", "当天未完成", false),
+            ("2026-10-10", "未来待办", false),
+        ]
+        .into_iter()
+        .map(|(date, title, completed)| Goal {
+            date: date.into(),
+            title: title.into(),
+            completed,
+            ..Goal::default()
+        })
+        .collect();
+        for style in [
+            ReportStyle::Brief,
+            ReportStyle::Detailed,
+            ReportStyle::Review,
+        ] {
+            let mut req = request("2026-10-09", ReportType::Daily);
+            req.style = style;
+            let report = make_report(&req, vec![], goals.clone()).unwrap();
+            let (completed, planned) = report.markdown.split_once("【明日重点计划】").unwrap();
+            assert!(completed.contains("今日交付"));
+            assert!(!completed.contains("积压目标"));
+            assert_eq!(planned.trim(), "1、积压目标：完成接口联调\n2、当天未完成");
+            assert!(!report.markdown.contains("昨日已完成"));
+            assert!(!report.markdown.contains("未来待办"));
+            assert_eq!(report.sources.goals.len(), 3);
+            assert_eq!(report.statistics.completed, 1);
+        }
+        let req = request("2026-10-09", ReportType::Daily);
+        let report = make_report(&req, vec![], vec![goals[0].clone()]).unwrap();
+        assert_eq!(daily_plan(&report), "1、积压目标：完成接口联调");
+        assert_eq!(
+            make_report(
+                &request("2026-10-09", ReportType::Weekly),
+                vec![],
+                goals.clone()
+            )
+            .unwrap()
+            .sources
+            .goals
+            .len(),
+            4
+        );
+        assert_eq!(
+            make_report(&request("2026-10-09", ReportType::Monthly), vec![], goals)
+                .unwrap()
+                .sources
+                .goals
+                .len(),
+            4
+        );
+    }
+
+    #[test]
+    fn custom_daily_templates_keep_backlog_in_local_and_ai_plans() {
+        let report = make_report(
+            &request("2026-10-09", ReportType::Daily),
+            vec![],
+            vec![Goal {
+                date: "2026-10-08".into(),
+                title: "往日未完成".into(),
+                ..Goal::default()
+            }],
+        )
+        .unwrap();
+        let templates = ReportTemplates {
+            daily: "# 我的日报\n{{项目完成情况}}".into(),
+            ..ReportTemplates::default()
+        };
+        assert_eq!(
+            render_template(&report, &templates).unwrap(),
+            "# 我的日报\n暂无\n\n## 【明日重点计划】\n1、往日未完成"
+        );
+        assert_eq!(
+            daily_ai_template(&templates.daily),
+            "# 我的日报\n{{项目完成情况}}\n\n## 【明日重点计划】\nRIJI_DAILY_PLAN_SLOT"
+        );
+        assert!(finish_daily_ai("# 我的日报\n暂无", &report, &templates.daily).is_err());
+        assert_eq!(
+            finish_daily_ai(
+                "# 我的日报\n暂无\n\n## 【明日重点计划】\nRIJI_DAILY_PLAN_SLOT",
+                &report,
+                &templates.daily
+            )
+            .unwrap(),
+            render_template(&report, &templates).unwrap()
+        );
+        for token in ["项目计划", "下阶段重点任务与交付", "未完成待办"] {
+            let template = format!("# 日报\n## 明日计划\n{{{{ {token} }}}}");
+            assert_eq!(daily_report_template(&template), template);
+            assert_eq!(
+                daily_ai_template(&template),
+                "# 日报\n## 明日计划\nRIJI_DAILY_PLAN_SLOT"
+            );
+        }
+    }
+
+    #[test]
+    fn daily_summaries_use_one_line_and_heading_only_groups_keep_their_work() {
+        let duplicated = "# 日报 2026-10-12\n\n## 【重点工作与交付】\nAI教学工作站\n1、岗位图谱数据：完成岗位图谱数据添加侧重于广西方面。\n①岗位图谱数据添加侧重于广西方面。\n2、岗位图谱样式：完成岗位图谱样式变更。\n①岗位图谱样式变更。\n3、岗位图谱搜索栏：完成岗位图谱搜索栏变更。\n①岗位图谱搜索栏变更。\n\n## 【风险与需协调事项】\nRIJI_DAILY_RISK_SLOT\n\n## 【明日重点计划】\nRIJI_DAILY_PLAN_SLOT";
+        let report = make_report(
+            &request("2026-10-12", ReportType::Daily),
+            vec![],
+            vec![Goal {
+                date: "2026-10-12".into(),
+                title: "研究使用presenton的PPT生成开源项目".into(),
+                ..Goal::default()
+            }],
+        )
+        .unwrap();
+        let output =
+            finish_daily_ai(duplicated, &report, &ReportTemplates::default().daily).unwrap();
+        assert!(output.contains("AI教学工作站\n1、岗位图谱数据：完成岗位图谱数据添加侧重于广西方面。\n2、岗位图谱样式：完成岗位图谱样式变更。\n3、岗位图谱搜索栏：完成岗位图谱搜索栏变更。"));
+        assert!(!output.contains('①'));
+        assert_eq!(output.matches("岗位图谱数据添加侧重于广西方面").count(), 1);
+        assert!(output.contains("【风险与需协调事项】\n无"));
+        assert!(output.ends_with("【明日重点计划】\n1、研究使用presenton的PPT生成开源项目"));
+        let grouped = "## 【重点工作与交付】\n1、官网：\n①完成登录\n②完成搜索\n另一个项目\n1、新功能：完成导出\n①导出实现细节\n## 【风险与需协调事项】\n①风险原文";
+        assert_eq!(flatten_daily_completed_items(grouped), "## 【重点工作与交付】\n官网\n1、完成登录\n2、完成搜索\n另一个项目\n1、新功能：完成导出\n## 【风险与需协调事项】\n①风险原文");
+    }
+
+    #[test]
+    fn daily_content_risks_and_verbatim_plan_are_stable_across_styles() {
+        let goals = vec![
+            Goal {
+                title: "岗位图谱样式变更".into(),
+                project: "AI教学工作站".into(),
+                date: "2026-10-12".into(),
+                completed: true,
+                actual_min: Some(90),
+                ..Goal::default()
+            },
+            Goal {
+                title: "研究使用presenton的PPT生成开源项目".into(),
+                date: "2026-10-12".into(),
+                ..Goal::default()
+            },
+        ];
+        for style in [
+            ReportStyle::Brief,
+            ReportStyle::Detailed,
+            ReportStyle::Review,
+        ] {
+            let mut req = request("2026-10-12", ReportType::Daily);
+            req.style = style;
+            let mut report = make_report(&req, vec![], goals.clone()).unwrap();
+            assert_eq!(report.markdown, "# 日报 2026-10-12\n\n## 【重点工作与交付】\nAI教学工作站\n1、岗位图谱样式变更\n\n## 【风险与需协调事项】\n无\n\n## 【明日重点计划】\n1、研究使用presenton的PPT生成开源项目");
+            assert_eq!(report.sources.goals[0].actual_min, Some(90));
+            report.sources.goals[0].risk = "待确认字段".into();
+            report.sources.goals[1].risk = "尚未找到可用模板".into();
+            assert_eq!(daily_risks(&report), "①岗位图谱样式变更：待确认字段\n②研究使用presenton的PPT生成开源项目：尚未找到可用模板");
+            let template = ReportTemplates::default();
+            assert_eq!(
+                finish_daily_ai(
+                    "风险\nRIJI_DAILY_RISK_SLOT\n计划\nRIJI_DAILY_PLAN_SLOT",
+                    &report,
+                    &template.daily
+                )
+                .unwrap(),
+                format!(
+                    "风险\n{}\n计划\n{}",
+                    daily_risks(&report),
+                    daily_plan(&report)
+                )
+            );
+            assert!(finish_daily_ai("风险与计划已被模型改写", &report, &template.daily).is_err());
+        }
+        let old = "# 日报 {{日期年-月-日}}\n\n## 【总体情况】\n{{汇报摘要}}\n\n## 【重点工作与交付】\n{{重点项目成果与实际影响}}\n\n## 【风险与需协调事项】\n{{风险与协调事项}}\n\n## 【明日重点计划】\n{{下阶段重点任务与交付}}";
+        let mut templates = ReportTemplates {
+            daily: old.into(),
+            ..ReportTemplates::default()
+        };
+        templates.upgrade_defaults();
+        assert_eq!(templates.daily, ReportTemplates::default().daily);
+        templates.daily = format!("{old}\n我的要求");
+        templates.upgrade_defaults();
+        assert_eq!(templates.daily, format!("{old}\n我的要求"));
+    }
     fn request(date: &str, kind: ReportType) -> ReportRequest {
         ReportRequest {
             r#type: kind,
@@ -617,9 +1027,9 @@ mod tests {
         let report = make_report(&request("2026-10-09", ReportType::Daily), vec![], goals).unwrap();
         assert_eq!(report.statistics.completion_rate, 33);
         let (completed, planned) = report.markdown.split_once("【明日重点计划】").unwrap();
-        assert!(completed.contains("①成果或进度：待办0"));
+        assert!(completed.contains("1、待办0"));
         assert!(!completed.contains("待办1"));
-        assert!(planned.contains("①重点任务：待办1\n②重点任务：待办2"));
+        assert!(planned.contains("1、待办1\n2、待办2"));
         assert!(!planned.contains("待办0"));
     }
     #[test]
@@ -732,7 +1142,6 @@ mod tests {
         })
         .collect();
         for (kind, header, plan) in [
-            (ReportType::Daily, "# 日报 2026-10-09", "明日重点计划"),
             (
                 ReportType::Weekly,
                 "# 周报\n\n2026-10-05 — 2026-10-11",
@@ -795,7 +1204,7 @@ mod tests {
     }
 
     #[test]
-    fn project_field_and_recorded_time_flow_into_reports_without_inventing_hours() {
+    fn project_field_flows_into_daily_reports_without_time_annotations() {
         let mk = |title: &str, project: &str, done: bool, actual: Option<u32>| Goal {
             id: uuid::Uuid::new_v4().to_string(),
             date: "2026-10-09".into(),
@@ -812,15 +1221,10 @@ mod tests {
             mk("采购询价", "", false, None),
         ];
         let report = make_report(&request("2026-10-09", ReportType::Daily), vec![], goals).unwrap();
-        assert!(report.markdown.contains("1、官网改版："));
-        assert!(report
-            .markdown
-            .contains("接口联调（实际耗时 2 小时 30 分钟）"));
+        assert!(report.markdown.contains("官网改版\n1、接口联调"));
+        assert!(!report.markdown.contains("耗时"));
         assert_eq!(report.statistics.actual_minutes, 150);
         assert_eq!(report.statistics.estimate_minutes, 75);
-        assert!(report
-            .markdown
-            .contains("1 项待办记录了实际耗时，合计 2 小时 30 分钟。"));
         let untimed = vec![mk("只有标题", "", true, None)];
         let report =
             make_report(&request("2026-10-09", ReportType::Daily), vec![], untimed).unwrap();

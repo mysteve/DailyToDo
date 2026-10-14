@@ -276,7 +276,7 @@ pub struct ReportTemplates {
 impl Default for ReportTemplates {
     fn default() -> Self {
         Self {
-            daily: "# 日报 {{日期年-月-日}}\n\n## 【总体情况】\n{{汇报摘要}}\n\n## 【重点工作与交付】\n{{重点项目成果与实际影响}}\n\n## 【风险与需协调事项】\n{{风险与协调事项}}\n\n## 【明日重点计划】\n{{下阶段重点任务与交付}}".into(),
+            daily: "# 日报 {{日期年-月-日}}\n\n## 【重点工作与交付】\n{{项目完成情况}}\n\n## 【风险与需协调事项】\n{{风险与协调事项}}\n\n## 【明日重点计划】\n{{项目计划}}".into(),
             weekly: "# 周报\n\n{{日期范围}}\n\n## 【本周总体情况】\n{{汇报摘要}}\n\n## 周计划进展对照\n{{周计划进展对照}}\n\n## 【重点项目与节点进展】\n{{重点项目成果与实际影响}}\n\n## 【进度风险与需协调事项】\n{{风险与协调事项}}\n\n## 【下周重点计划】\n{{下阶段重点任务与交付}}".into(),
             monthly: "# 月报\n\n{{日期范围}}\n\n## 【月度目标达成情况】\n{{月度目标达成情况}}\n\n## 【主要成果与业务价值】\n{{重点项目成果与实际影响}}\n\n## 【未完成事项与原因】\n{{未完成事项与原因}}\n\n## 【风险与需协调事项】\n{{风险与协调事项}}\n\n## 【下月重点计划】\n{{下阶段重点任务与交付}}".into(),
         }
@@ -286,6 +286,10 @@ impl Default for ReportTemplates {
 impl ReportTemplates {
     pub fn upgrade_defaults(&mut self) {
         let defaults = Self::default();
+        let previous_daily = "# 日报 {{日期年-月-日}}\n\n## 【总体情况】\n{{汇报摘要}}\n\n## 【重点工作与交付】\n{{重点项目成果与实际影响}}\n\n## 【风险与需协调事项】\n{{风险与协调事项}}\n\n## 【明日重点计划】\n{{下阶段重点任务与交付}}";
+        if self.daily == previous_daily {
+            self.daily = defaults.daily.clone();
+        }
         for (value, default, period, kind, date, plan) in [
             (
                 &mut self.daily,
