@@ -366,7 +366,7 @@ pub fn finish_daily_ai(content: &str, report: &Report, template: &str) -> Result
     // Only replace standalone markers, never marker text inside a todo title.
     let risks = daily_risks(report);
     let plan = daily_plan(report);
-    let content = flatten_daily_completed_items(content);
+    let content = flatten_daily_completed_items(content, report);
     Ok(content
         .lines()
         .map(|line| match line.trim() {
@@ -378,7 +378,37 @@ pub fn finish_daily_ai(content: &str, report: &Report, template: &str) -> Result
         .join("\n"))
 }
 
-fn flatten_daily_completed_items(content: &str) -> String {
+fn daily_completed_description<'a>(summary: &'a str, report: &Report) -> &'a str {
+    for goal in report.sources.goals.iter().filter(|goal| goal.completed) {
+        let title = goal.title.trim();
+        let item = if goal.project.trim().is_empty() {
+            [('【', '】'), ('[', ']')]
+                .iter()
+                .find_map(|(open, close)| title.strip_prefix(*open)?.split_once(*close))
+                .or_else(|| title.split_once(['：', ':']))
+                .filter(|(project, content)| {
+                    !project.trim().is_empty() && !content.trim().is_empty()
+                })
+                .map(|(_, content)| content.trim())
+                .unwrap_or(title)
+        } else {
+            title
+        };
+        for label in [title, item] {
+            if let Some(description) = summary
+                .strip_prefix(label)
+                .and_then(|rest| rest.trim_start().strip_prefix(['：', ':']))
+                .map(str::trim)
+                .filter(|description| !description.is_empty())
+            {
+                return description;
+            }
+        }
+    }
+    summary
+}
+
+fn flatten_daily_completed_items(content: &str, report: &Report) -> String {
     let mut output = Vec::new();
     let mut in_completed = false;
     let mut has_summary = false;
@@ -406,15 +436,18 @@ fn flatten_daily_completed_items(content: &str) -> String {
             if let Some((prefix, summary)) = trimmed.split_once('、') {
                 if let Ok(index) = prefix.parse::<usize>() {
                     let summary = summary.trim();
-                    has_summary = summary
-                        .split_once(['：', ':'])
-                        .is_some_and(|(_, description)| !description.trim().is_empty());
+                    has_summary = !summary.is_empty() && !summary.ends_with(['：', ':']);
                     number = index;
                     if !summary.is_empty() && summary.ends_with(['：', ':']) {
                         output.push(summary.trim_end_matches(['：', ':']).to_string());
                         number = 0;
                         continue;
                     }
+                    output.push(format!(
+                        "{index}、{}",
+                        daily_completed_description(summary, report)
+                    ));
+                    continue;
                 }
             } else if let Some(first) = trimmed.chars().next().filter(|c| ('①'..='⑳').contains(c))
             {
@@ -424,7 +457,10 @@ fn flatten_daily_completed_items(content: &str) -> String {
                 }
                 // If the model supplied only a project heading, retain each actual item.
                 number += 1;
-                output.push(format!("{number}、{}", trimmed[first.len_utf8()..].trim()));
+                output.push(format!(
+                    "{number}、{}",
+                    daily_completed_description(trimmed[first.len_utf8()..].trim(), report)
+                ));
                 continue;
             } else if !trimmed.is_empty() {
                 has_summary = false;
@@ -852,7 +888,95 @@ mod tests {
         assert!(output.contains("【风险与需协调事项】\n无"));
         assert!(output.ends_with("【明日重点计划】\n1、研究使用presenton的PPT生成开源项目"));
         let grouped = "## 【重点工作与交付】\n1、官网：\n①完成登录\n②完成搜索\n另一个项目\n1、新功能：完成导出\n①导出实现细节\n## 【风险与需协调事项】\n①风险原文";
-        assert_eq!(flatten_daily_completed_items(grouped), "## 【重点工作与交付】\n官网\n1、完成登录\n2、完成搜索\n另一个项目\n1、新功能：完成导出\n## 【风险与需协调事项】\n①风险原文");
+        assert_eq!(flatten_daily_completed_items(grouped, &report), "## 【重点工作与交付】\n官网\n1、完成登录\n2、完成搜索\n另一个项目\n1、新功能：完成导出\n## 【风险与需协调事项】\n①风险原文");
+    }
+
+    #[test]
+    fn daily_ai_keeps_polished_outcomes_without_repeating_todo_titles() {
+        let database_title = "调整数据库wechat字段长度解决报错问题";
+        let questions_title = "去二轻学校补充缺失的题目数据避免演示培训时出现报错问题";
+        let plan_title = "核对数据：确认培训题目范围";
+        let report = make_report(
+            &request("2026-10-15", ReportType::Daily),
+            vec![],
+            vec![
+                Goal {
+                    title: database_title.into(),
+                    project: "司法矫正系统".into(),
+                    date: "2026-10-15".into(),
+                    completed: true,
+                    ..Goal::default()
+                },
+                Goal {
+                    title: questions_title.into(),
+                    project: "实训平台".into(),
+                    date: "2026-10-15".into(),
+                    completed: true,
+                    ..Goal::default()
+                },
+                Goal {
+                    title: plan_title.into(),
+                    date: "2026-10-14".into(),
+                    ..Goal::default()
+                },
+            ],
+        )
+        .unwrap();
+        let legacy = format!("# 日报 2026-10-15\n\n## 【重点工作与交付】\n司法矫正系统\n1、{database_title}：调整数据库 wechat 字段长度，修复字段长度不足导致的报错。\n①调整数据库 wechat 字段长度，修复字段长度不足导致的报错。\n\n实训平台\n1、{questions_title}：赴二轻学校补齐缺失题目数据，避免演示和培训时因数据缺失报错。\n\n## 【风险与需协调事项】\nRIJI_DAILY_RISK_SLOT\n\n## 【明日重点计划】\nRIJI_DAILY_PLAN_SLOT");
+        let expected = "# 日报 2026-10-15\n\n## 【重点工作与交付】\n司法矫正系统\n1、调整数据库 wechat 字段长度，修复字段长度不足导致的报错。\n\n实训平台\n1、赴二轻学校补齐缺失题目数据，避免演示和培训时因数据缺失报错。\n\n## 【风险与需协调事项】\n无\n\n## 【明日重点计划】\n1、核对数据：确认培训题目范围";
+        assert_eq!(
+            finish_daily_ai(&legacy, &report, &ReportTemplates::default().daily).unwrap(),
+            expected
+        );
+        let polished = legacy
+            .replace(&format!("{database_title}："), "")
+            .replace(&format!("{questions_title}："), "");
+        assert_eq!(
+            finish_daily_ai(&polished, &report, &ReportTemplates::default().daily).unwrap(),
+            expected
+        );
+        // Colons within a work description are not todo-title labels.
+        let with_colons = polished.replace(
+            "调整数据库 wechat 字段长度，修复字段长度不足导致的报错。",
+            "完成数据库调整：扩展 wechat 字段长度，修复报错。",
+        );
+        assert!(
+            finish_daily_ai(&with_colons, &report, &ReportTemplates::default().daily)
+                .unwrap()
+                .contains("1、完成数据库调整：扩展 wechat 字段长度，修复报错。")
+        );
+    }
+
+    #[test]
+    fn daily_ai_removes_title_labels_with_legacy_project_prefixes() {
+        for title in [
+            "司法矫正系统：修复字段长度报错",
+            "司法矫正系统:修复字段长度报错",
+            "【司法矫正系统】修复字段长度报错",
+            "[司法矫正系统]修复字段长度报错",
+            "修复字段长度报错",
+        ] {
+            let report = make_report(
+                &request("2026-10-15", ReportType::Daily),
+                vec![],
+                vec![Goal {
+                    title: title.into(),
+                    date: "2026-10-15".into(),
+                    completed: true,
+                    ..Goal::default()
+                }],
+            )
+            .unwrap();
+            for label in [title, "修复字段长度报错"] {
+                for colon in ["：", ":"] {
+                    let content = format!("## 【重点工作与交付】\n司法矫正系统\n1、{label}{colon} 调整 wechat 字段长度，修复报错。\n\n## 【风险与需协调事项】\nRIJI_DAILY_RISK_SLOT\n\n## 【明日重点计划】\nRIJI_DAILY_PLAN_SLOT");
+                    let output =
+                        finish_daily_ai(&content, &report, &ReportTemplates::default().daily)
+                            .unwrap();
+                    assert!(output.contains("司法矫正系统\n1、调整 wechat 字段长度，修复报错。"));
+                }
+            }
+        }
     }
 
     #[test]
